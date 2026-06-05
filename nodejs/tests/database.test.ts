@@ -1,0 +1,648 @@
+/**
+ * Unit tests for src/db/database.ts
+ *
+ * Strategy:
+ * - Each test suite uses its own temporary database file via initDbAsync().
+ * - beforeEach creates a fresh DB; afterEach closes it.
+ * - saveDb() is spied on to suppress filesystem writes during tests.
+ */
+
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import path from "path";
+import os from "os";
+import fs from "fs";
+
+// We must import * to access module-level state and override it
+import {
+  initDbAsync,
+  closeDb,
+  saveDb,
+  // Provider CRUD
+  addProvider,
+  getProviders,
+  getProviderById,
+  updateProvider,
+  deleteProvider,
+  // User CRUD
+  addUser,
+  getUsers,
+  getUserByTgId,
+  getUserById,
+  updateUserStatus,
+  deleteUser,
+  updateUserTgId,
+  // API Key CRUD
+  addApiKey,
+  getKeysByUser,
+  getKeyByValue,
+  deleteApiKey,
+  getAllKeys,
+  // Usage CRUD
+  recordUsage,
+  getUsageByUser,
+  getUsageByProvider,
+  getTotalUsage,
+  // Settings CRUD
+  getSetting,
+  setSetting,
+  // Types
+  type Provider,
+  type User,
+  type ApiKey,
+  type UsageRecord,
+  type TotalUsage,
+} from "../src/db/database.js";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+let tmpDir: string;
+let dbFile: string;
+
+/** Create a fresh temporary database path for each test */
+function makeTempDbPath(): string {
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "s12ryt-test-"));
+  dbFile = path.join(tmpDir, "test.db");
+  return dbFile;
+}
+
+/** Clean up temp directory */
+function cleanupTempDir(): void {
+  try {
+    if (tmpDir && fs.existsSync(tmpDir)) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  } catch {
+    // ignore cleanup errors
+  }
+}
+
+// Suppress console.log / console.error noise during tests
+beforeEach(() => {
+  vi.spyOn(console, "log").mockImplementation(() => {});
+  vi.spyOn(console, "error").mockImplementation(() => {});
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+// ===========================================================================
+// Provider Tests
+// ===========================================================================
+describe("Provider CRUD", () => {
+  beforeEach(async () => {
+    await initDbAsync(makeTempDbPath());
+  });
+
+  afterEach(() => {
+    closeDb();
+    cleanupTempDir();
+  });
+
+  it("should add a provider and retrieve it", () => {
+    addProvider({
+      name: "OpenAI",
+      api_type: "openai",
+      base_url: "https://api.openai.com/v1",
+      api_key: "sk-test-key",
+      models: "gpt-4o,gpt-4o-mini",
+      input_price: 0.005,
+      output_price: 0.015,
+    });
+
+    const providers = getProviders();
+    expect(providers).toHaveLength(1);
+    expect(providers[0].name).toBe("OpenAI");
+    expect(providers[0].api_type).toBe("openai");
+    expect(providers[0].base_url).toBe("https://api.openai.com/v1");
+    expect(providers[0].api_key).toBe("sk-test-key");
+    expect(providers[0].models).toBe("gpt-4o,gpt-4o-mini");
+    expect(providers[0].enabled).toBe(1);
+    expect(providers[0].input_price).toBe(0.005);
+    expect(providers[0].output_price).toBe(0.015);
+  });
+
+  it("should reject duplicate provider name", () => {
+    addProvider({
+      name: "OpenAI",
+      api_type: "openai",
+      base_url: "https://api.openai.com/v1",
+      api_key: "sk-key1",
+      models: "gpt-4o",
+      input_price: null,
+      output_price: null,
+    });
+
+    expect(() =>
+      addProvider({
+        name: "OpenAI",
+        api_type: "openai",
+        base_url: "https://api.openai.com/v2",
+        api_key: "sk-key2",
+        models: "gpt-4o",
+        input_price: null,
+        output_price: null,
+      })
+    ).toThrow();
+  });
+
+  it("should get provider by id", () => {
+    addProvider({
+      name: "Anthropic",
+      api_type: "anthropic",
+      base_url: "https://api.anthropic.com",
+      api_key: "sk-ant-key",
+      models: "claude-3-5-sonnet",
+      input_price: 0.003,
+      output_price: 0.015,
+    });
+
+    const provider = getProviderById(1);
+    expect(provider).toBeDefined();
+    expect(provider!.name).toBe("Anthropic");
+    expect(provider!.api_type).toBe("anthropic");
+  });
+
+  it("should return undefined for non-existent provider id", () => {
+    const provider = getProviderById(999);
+    expect(provider).toBeUndefined();
+  });
+
+  it("should update a provider", () => {
+    addProvider({
+      name: "Google",
+      api_type: "google",
+      base_url: "https://generativelanguage.googleapis.com",
+      api_key: "google-key",
+      models: "gemini-pro",
+      input_price: null,
+      output_price: null,
+    });
+
+    updateProvider(1, { name: "Google AI", enabled: 0, models: "gemini-pro,gemini-ultra" });
+
+    const updated = getProviderById(1);
+    expect(updated).toBeDefined();
+    expect(updated!.name).toBe("Google AI");
+    expect(updated!.enabled).toBe(0);
+    expect(updated!.models).toBe("gemini-pro,gemini-ultra");
+  });
+
+  it("should throw when updating with no fields", () => {
+    addProvider({
+      name: "OpenAI",
+      api_type: "openai",
+      base_url: "https://api.openai.com/v1",
+      api_key: "sk-key",
+      models: "gpt-4o",
+      input_price: null,
+      output_price: null,
+    });
+
+    expect(() => updateProvider(1, {})).toThrow("No fields to update");
+  });
+
+  it("should delete a provider by id", () => {
+    addProvider({
+      name: "OpenAI",
+      api_type: "openai",
+      base_url: "https://api.openai.com/v1",
+      api_key: "sk-key",
+      models: "gpt-4o",
+      input_price: null,
+      output_price: null,
+    });
+    addProvider({
+      name: "Anthropic",
+      api_type: "anthropic",
+      base_url: "https://api.anthropic.com",
+      api_key: "sk-ant",
+      models: "claude-3",
+      input_price: null,
+      output_price: null,
+    });
+
+    deleteProvider([1]);
+
+    const remaining = getProviders();
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].name).toBe("Anthropic");
+  });
+
+  it("should delete multiple providers", () => {
+    addProvider({ name: "P1", api_type: "openai", base_url: "https://p1", api_key: "k1", models: "", input_price: null, output_price: null });
+    addProvider({ name: "P2", api_type: "openai", base_url: "https://p2", api_key: "k2", models: "", input_price: null, output_price: null });
+    addProvider({ name: "P3", api_type: "openai", base_url: "https://p3", api_key: "k3", models: "", input_price: null, output_price: null });
+
+    deleteProvider([1, 3]);
+
+    const remaining = getProviders();
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].name).toBe("P2");
+  });
+
+  it("should filter providers by enabled status", () => {
+    addProvider({ name: "Enabled1", api_type: "openai", base_url: "https://e1", api_key: "k1", models: "", input_price: null, output_price: null });
+    addProvider({ name: "Disabled1", api_type: "openai", base_url: "https://d1", api_key: "k2", models: "", input_price: null, output_price: null });
+
+    updateProvider(2, { enabled: 0 });
+
+    const all = getProviders(false);
+    const enabled = getProviders(true);
+
+    expect(all).toHaveLength(2);
+    expect(enabled).toHaveLength(1);
+    expect(enabled[0].name).toBe("Enabled1");
+  });
+
+  it("should allow null prices for provider", () => {
+    addProvider({
+      name: "FreeProvider",
+      api_type: "google",
+      base_url: "https://free",
+      api_key: "free-key",
+      models: "free-model",
+      input_price: null,
+      output_price: null,
+    });
+
+    const provider = getProviderById(1);
+    expect(provider!.input_price).toBeNull();
+    expect(provider!.output_price).toBeNull();
+  });
+});
+
+// ===========================================================================
+// User Tests
+// ===========================================================================
+describe("User CRUD", () => {
+  beforeEach(async () => {
+    await initDbAsync(makeTempDbPath());
+  });
+
+  afterEach(() => {
+    closeDb();
+    cleanupTempDir();
+  });
+
+  it("should add a user and retrieve by tg_user_id", () => {
+    addUser(12345678, "testuser");
+
+    const user = getUserByTgId(12345678);
+    expect(user).toBeDefined();
+    expect(user!.tg_user_id).toBe(12345678);
+    expect(user!.username).toBe("testuser");
+    expect(user!.is_active).toBe(1);
+  });
+
+  it("should add user with null username", () => {
+    addUser(99999);
+
+    const user = getUserByTgId(99999);
+    expect(user).toBeDefined();
+    expect(user!.username).toBeNull();
+  });
+
+  it("should reject duplicate tg_user_id", () => {
+    addUser(11111, "user1");
+
+    expect(() => addUser(11111, "user2")).toThrow();
+  });
+
+  it("should get user by id", () => {
+    addUser(22222, "byIdUser");
+
+    const user = getUserById(1);
+    expect(user).toBeDefined();
+    expect(user!.username).toBe("byIdUser");
+  });
+
+  it("should return undefined for non-existent user id", () => {
+    const user = getUserById(999);
+    expect(user).toBeUndefined();
+  });
+
+  it("should return undefined for non-existent tg_user_id", () => {
+    const user = getUserByTgId(999999);
+    expect(user).toBeUndefined();
+  });
+
+  it("should get all users", () => {
+    addUser(100, "userA");
+    addUser(200, "userB");
+    addUser(300, "userC");
+
+    const users = getUsers();
+    expect(users).toHaveLength(3);
+    expect(users[0].tg_user_id).toBe(100);
+    expect(users[2].tg_user_id).toBe(300);
+  });
+
+  it("should get users excluding admin id", () => {
+    addUser(1000, "admin");
+    addUser(2000, "user1");
+    addUser(3000, "user2");
+
+    const users = getUsers(1000);
+    expect(users).toHaveLength(2);
+    expect(users.every((u) => u.tg_user_id !== 1000)).toBe(true);
+  });
+
+  it("should update user status", () => {
+    addUser(55555, "statusUser");
+
+    updateUserStatus(1, 0);
+
+    const user = getUserByTgId(55555);
+    expect(user!.is_active).toBe(0);
+  });
+
+  it("should delete a user", () => {
+    addUser(77777, "deleteMe");
+    addUser(88888, "keepMe");
+
+    deleteUser(1);
+
+    const users = getUsers();
+    expect(users).toHaveLength(1);
+    expect(users[0].tg_user_id).toBe(88888);
+  });
+
+  it("should update user tg_user_id", () => {
+    addUser(10000, "migrateMe");
+
+    updateUserTgId(10000, 20000);
+
+    const oldUser = getUserByTgId(10000);
+    expect(oldUser).toBeUndefined();
+
+    const newUser = getUserByTgId(20000);
+    expect(newUser).toBeDefined();
+    expect(newUser!.username).toBe("migrateMe");
+  });
+});
+
+// ===========================================================================
+// API Key Tests
+// ===========================================================================
+describe("API Key CRUD", () => {
+  beforeEach(async () => {
+    await initDbAsync(makeTempDbPath());
+    // Add a user that most tests depend on
+    addUser(12345, "keyuser");
+  });
+
+  afterEach(() => {
+    closeDb();
+    cleanupTempDir();
+  });
+
+  it("should add an API key for existing user", () => {
+    const result = addApiKey(12345);
+
+    expect(result.key).toMatch(/^sk-s12ryt-/);
+
+    const keys = getKeysByUser(12345);
+    expect(keys).toHaveLength(1);
+    expect(keys[0].key).toBe(result.key);
+    expect(keys[0].is_active).toBe(1);
+  });
+
+  it("should throw when adding key for non-existent user", () => {
+    expect(() => addApiKey(99999)).toThrow("User with tg_user_id 99999 not found");
+  });
+
+  it("should get key by value", () => {
+    const { key } = addApiKey(12345);
+
+    const found = getKeyByValue(key);
+    expect(found).toBeDefined();
+    expect(found!.key).toBe(key);
+  });
+
+  it("should return undefined for non-existent key value", () => {
+    const found = getKeyByValue("sk-s12ryt-nonexistent");
+    expect(found).toBeUndefined();
+  });
+
+  it("should delete an API key", () => {
+    addApiKey(12345);
+
+    const keys = getKeysByUser(12345);
+    expect(keys).toHaveLength(1);
+
+    deleteApiKey(keys[0].id);
+
+    const keysAfterDelete = getKeysByUser(12345);
+    expect(keysAfterDelete).toHaveLength(0);
+  });
+
+  it("should get all keys with user info", () => {
+    addUser(67890, "anotheruser");
+    addApiKey(12345);
+    addApiKey(67890);
+
+    const allKeys = getAllKeys();
+    expect(allKeys).toHaveLength(2);
+
+    // First key belongs to keyuser (tg 12345)
+    expect(allKeys[0].tg_user_id).toBe(12345);
+    expect(allKeys[0].username).toBe("keyuser");
+
+    // Second key belongs to anotheruser (tg 67890)
+    expect(allKeys[1].tg_user_id).toBe(67890);
+    expect(allKeys[1].username).toBe("anotheruser");
+  });
+
+  it("should generate unique keys", () => {
+    const key1 = addApiKey(12345);
+    const key2 = addApiKey(12345);
+
+    expect(key1.key).not.toBe(key2.key);
+    expect(getKeysByUser(12345)).toHaveLength(2);
+  });
+});
+
+// ===========================================================================
+// Usage Tests
+// ===========================================================================
+describe("Usage CRUD", () => {
+  let providerId: number;
+  let apiKeyId: number;
+
+  beforeEach(async () => {
+    await initDbAsync(makeTempDbPath());
+
+    // Set up prerequisite data
+    addUser(11111, "usageUser");
+    addProvider({
+      name: "TestProvider",
+      api_type: "openai",
+      base_url: "https://test",
+      api_key: "test-key",
+      models: "gpt-4o",
+      input_price: 0.005,
+      output_price: 0.015,
+    });
+
+    providerId = 1; // first provider
+    const { key } = addApiKey(11111);
+    const apiKeyRecord = getKeyByValue(key);
+    apiKeyId = apiKeyRecord!.id;
+  });
+
+  afterEach(() => {
+    closeDb();
+    cleanupTempDir();
+  });
+
+  it("should record usage", () => {
+    recordUsage(apiKeyId, providerId, 100, 50, 0.5, 0.75, "gpt-4o");
+
+    const usage = getUsageByUser(11111);
+    expect(usage).toHaveLength(1);
+    expect(usage[0].input_tokens).toBe(100);
+    expect(usage[0].output_tokens).toBe(50);
+    expect(usage[0].input_cost).toBe(0.5);
+    expect(usage[0].output_cost).toBe(0.75);
+    expect(usage[0].model).toBe("gpt-4o");
+    expect(usage[0].provider_name).toBe("TestProvider");
+  });
+
+  it("should get usage by provider", () => {
+    recordUsage(apiKeyId, providerId, 200, 100, 1.0, 1.5, "gpt-4o");
+
+    const usage = getUsageByProvider(providerId);
+    expect(usage).toHaveLength(1);
+    expect(usage[0].input_tokens).toBe(200);
+    expect(usage[0].provider_name).toBe("TestProvider");
+  });
+
+  it("should return empty array for user with no usage", () => {
+    addUser(22222, "noUsageUser");
+    const usage = getUsageByUser(22222);
+    expect(usage).toHaveLength(0);
+  });
+
+  it("should return empty array for provider with no usage", () => {
+    addProvider({
+      name: "EmptyProvider",
+      api_type: "anthropic",
+      base_url: "https://empty",
+      api_key: "empty-key",
+      models: "claude-3",
+      input_price: null,
+      output_price: null,
+    });
+
+    const usage = getUsageByProvider(2);
+    expect(usage).toHaveLength(0);
+  });
+
+  it("should get total usage with no records", () => {
+    const total = getTotalUsage();
+    expect(total.total_input_tokens).toBe(0);
+    expect(total.total_output_tokens).toBe(0);
+    expect(total.total_input_cost).toBe(0);
+    expect(total.total_output_cost).toBe(0);
+    expect(total.total_cost).toBe(0);
+    expect(total.record_count).toBe(0);
+  });
+
+  it("should calculate total usage correctly", () => {
+    recordUsage(apiKeyId, providerId, 100, 50, 0.5, 0.75, "gpt-4o");
+    recordUsage(apiKeyId, providerId, 200, 100, 1.0, 1.5, "gpt-4o-mini");
+
+    const total = getTotalUsage();
+    expect(total.total_input_tokens).toBe(300);
+    expect(total.total_output_tokens).toBe(150);
+    expect(total.total_input_cost).toBe(1.5);
+    expect(total.total_output_cost).toBe(2.25);
+    expect(total.total_cost).toBeCloseTo(3.75, 5);
+    expect(total.record_count).toBe(2);
+  });
+});
+
+// ===========================================================================
+// Settings Tests
+// ===========================================================================
+describe("Settings CRUD", () => {
+  beforeEach(async () => {
+    await initDbAsync(makeTempDbPath());
+  });
+
+  afterEach(() => {
+    closeDb();
+    cleanupTempDir();
+  });
+
+  it("should return null for non-existent setting", () => {
+    const value = getSetting("nonexistent");
+    expect(value).toBeNull();
+  });
+
+  it("should set and get a setting", () => {
+    setSetting("test_key", "test_value");
+    expect(getSetting("test_key")).toBe("test_value");
+  });
+
+  it("should upsert a setting (update existing key)", () => {
+    setSetting("my_setting", "value1");
+    expect(getSetting("my_setting")).toBe("value1");
+
+    setSetting("my_setting", "value2");
+    expect(getSetting("my_setting")).toBe("value2");
+  });
+
+  it("should handle multiple different settings", () => {
+    setSetting("key_a", "alpha");
+    setSetting("key_b", "beta");
+    setSetting("key_c", "gamma");
+
+    expect(getSetting("key_a")).toBe("alpha");
+    expect(getSetting("key_b")).toBe("beta");
+    expect(getSetting("key_c")).toBe("gamma");
+  });
+});
+
+// ===========================================================================
+// Database Lifecycle Tests
+// ===========================================================================
+describe("Database lifecycle", () => {
+  it("should throw if getDb() called before init", async () => {
+    // Ensure no DB is active - close if any
+    try { closeDb(); } catch { /* ok */ }
+
+    // We need to re-import or the module-level db is still null
+    // Since closeDb sets db=null, getDb should throw
+    // But there's a catch - the module might have been initialized by other tests
+    // So we'll test initDb sync throws
+    const { getDb } = await import("../src/db/database.js");
+    // After close, db is null
+    try { closeDb(); } catch { /* ok */ }
+
+    expect(() => getDb()).toThrow("Database not initialized");
+  });
+
+  it("should persist data across close and reopen", async () => {
+    const dbPath = makeTempDbPath();
+
+    // First session: add data
+    await initDbAsync(dbPath);
+    addUser(55555, "persistent_user");
+    setSetting("persisted", "yes");
+    closeDb();
+
+    // Second session: verify data persisted
+    await initDbAsync(dbPath);
+    const user = getUserByTgId(55555);
+    expect(user).toBeDefined();
+    expect(user!.username).toBe("persistent_user");
+    expect(getSetting("persisted")).toBe("yes");
+    closeDb();
+
+    cleanupTempDir();
+  });
+});
