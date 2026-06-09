@@ -54,10 +54,6 @@ async function handleKey(ctx: MyContext): Promise<void> {
   ensureUserExists(tgId, ctx.from!.username);
 
   const keys = getKeysByUser(tgId);
-  console.log(`[debug /key] tgId=${tgId}, keys.length=${keys.length}`);
-  for (const k of keys) {
-    console.log(`[debug /key] key=${k.key}, is_active=${k.is_active} (${typeof k.is_active})`);
-  }
 
   const activeKeys = keys.filter((k) => Number(k.is_active) === 1);
 

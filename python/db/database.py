@@ -6,7 +6,7 @@ import os
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 import aiosqlite
@@ -207,7 +207,7 @@ def enqueue_usage(
         "input_cost": input_cost,
         "output_cost": output_cost,
         "model": model,
-        "created_at": datetime.utcnow().isoformat(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
     })
 
     if len(_usage_queue) >= _FLUSH_THRESHOLD:
@@ -308,6 +308,48 @@ async def init_db() -> None:
             except aiosqlite.OperationalError:
                 pass  # Column already exists
 
+        # Migration: openai → openai_chat (split api_type)
+        async with db.execute(
+            "SELECT value FROM settings WHERE key = 'migration_openai_split'"
+        ) as cur:
+            row = await cur.fetchone()
+        if not row:
+            logger.info("Running migration: openai → openai_chat")
+            await db.execute("PRAGMA foreign_keys = OFF")
+
+            # Recreate providers table with updated CHECK constraint
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS providers_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT UNIQUE NOT NULL,
+                    api_type TEXT NOT NULL CHECK(api_type IN ('openai_chat', 'openai_response', 'anthropic', 'google')),
+                    base_url TEXT NOT NULL,
+                    api_key TEXT NOT NULL,
+                    models TEXT DEFAULT '',
+                    enabled INTEGER DEFAULT 1,
+                    input_price REAL DEFAULT 0,
+                    output_price REAL DEFAULT 0,
+                    created_at TEXT DEFAULT (datetime('now')),
+                    updated_at TEXT DEFAULT (datetime('now'))
+                )
+            """)
+            await db.execute("""
+                INSERT INTO providers_new
+                SELECT id, name,
+                    CASE WHEN api_type = 'openai' THEN 'openai_chat' ELSE api_type END,
+                    base_url, api_key, models, enabled, input_price, output_price, created_at, updated_at
+                FROM providers
+            """)
+            await db.execute("DROP TABLE providers")
+            await db.execute("ALTER TABLE providers_new RENAME TO providers")
+
+            await db.execute("PRAGMA foreign_keys = ON")
+            await db.execute(
+                "INSERT INTO settings (key, value) VALUES ('migration_openai_split', '1')"
+            )
+            await db.commit()
+            logger.info("Migration complete: openai → openai_chat")
+
         await db.commit()
 
     # Rebuild provider cache and start usage flush timer
@@ -332,7 +374,7 @@ async def add_provider(
     """Add a new API provider."""
     async with await get_connection() as db:
         try:
-            now = datetime.utcnow().isoformat()
+            now = datetime.now(timezone.utc).isoformat()
             cursor = await db.execute(
                 """
                 INSERT INTO providers (name, api_type, base_url, api_key, models, input_price, output_price, created_at, updated_at)
@@ -377,7 +419,7 @@ async def update_provider(provider_id: int, **kwargs) -> Optional[dict]:
     if not updates:
         return await get_provider_by_id(provider_id)
 
-    updates["updated_at"] = datetime.utcnow().isoformat()
+    updates["updated_at"] = datetime.now(timezone.utc).isoformat()
     set_clause = ", ".join(f"{k} = ?" for k in updates)
     values = list(updates.values()) + [provider_id]
 
@@ -409,7 +451,7 @@ async def add_user(tg_user_id: int, username: str = "") -> Optional[dict]:
     """Add a new user."""
     async with await get_connection() as db:
         try:
-            now = datetime.utcnow().isoformat()
+            now = datetime.now(timezone.utc).isoformat()
             cursor = await db.execute(
                 """
                 INSERT INTO users (tg_user_id, username, is_active, created_at)
@@ -498,7 +540,7 @@ async def add_api_key(tg_user_id: int) -> Optional[dict]:
             return None
 
     new_key = f"sk-s12ryt-{uuid_utils.uuid7()}"
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
 
     async with await get_connection() as db:
         try:
@@ -583,7 +625,7 @@ async def record_usage(
     model: str,
 ) -> Optional[dict]:
     """Record API usage for a key and provider."""
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     async with await get_connection() as db:
         cursor = await db.execute(
             """

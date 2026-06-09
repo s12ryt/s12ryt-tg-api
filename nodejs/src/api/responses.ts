@@ -707,3 +707,304 @@ export async function* streamResponsesApi(
   const encoder = new TextEncoder();
   yield encoder.encode("data: [DONE]\n\n");
 }
+
+// ---------------------------------------------------------------------------
+// Input conversion: Chat Completions → Responses API (reverse)
+// ---------------------------------------------------------------------------
+
+/**
+ * Convert Chat Completions messages to Responses API input items.
+ * System messages are extracted as *instructions* rather than input items.
+ *
+ * @returns `{ inputItems, instructions }`
+ */
+export function convertMessagesToResponsesInput(
+  messages: ChatMessage[]
+): { inputItems: Record<string, any>[]; instructions: string | null } {
+  let instructions: string | null = null;
+  const inputItems: Record<string, any>[] = [];
+
+  for (const msg of messages) {
+    const role = msg.role ?? "user";
+    const content = msg.content;
+
+    if (role === "system") {
+      instructions = typeof content === "string" ? content : String(content);
+      continue;
+    }
+
+    if (role === "tool") {
+      inputItems.push({
+        type: "function_call_output",
+        call_id: msg.tool_call_id ?? "",
+        output: typeof content === "string" ? content : String(content),
+      });
+      continue;
+    }
+
+    if (role === "assistant") {
+      // Check for tool calls
+      if (msg.tool_calls && msg.tool_calls.length > 0) {
+        for (const tc of msg.tool_calls) {
+          inputItems.push({
+            type: "function_call",
+            call_id: tc.id ?? "",
+            name: tc.function?.name ?? "",
+            arguments: tc.function?.arguments ?? "",
+          });
+        }
+        continue;
+      }
+
+      // Regular assistant message
+      inputItems.push({
+        type: "message",
+        role: "assistant",
+        content: convertChatContentToResponses(content),
+      });
+      continue;
+    }
+
+    // User message
+    inputItems.push({
+      type: "message",
+      role: "user",
+      content: convertChatContentToResponses(content),
+    });
+  }
+
+  return { inputItems, instructions };
+}
+
+function convertChatContentToResponses(content: string | unknown[]): string | unknown[] {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return String(content);
+
+  const parts: unknown[] = [];
+  for (const part of content as Record<string, any>[]) {
+    if (part.type === "text") {
+      parts.push({ type: "input_text", text: part.text ?? "" });
+    } else if (part.type === "image_url") {
+      const urlData = part.image_url ?? {};
+      parts.push({
+        type: "input_image",
+        image_url: urlData.url ?? "",
+        detail: urlData.detail ?? "auto",
+      });
+    }
+  }
+  return parts.length > 0 ? parts : "";
+}
+
+// ---------------------------------------------------------------------------
+// Tools conversion: Chat Completions → Responses API (reverse)
+// ---------------------------------------------------------------------------
+
+/**
+ * Convert Chat Completions tools to Responses API tools format.
+ *
+ * Chat Completions: { type: "function", function: { name, description, parameters } }
+ * Responses API:    { type: "function", name, description, parameters }
+ */
+export function convertChatToolsToResponsesTools(
+  tools: Record<string, any>[]
+): Record<string, any>[] {
+  return tools.map((tool) => {
+    // Already in Responses API format (no nested "function" key)
+    if (!("function" in tool) && tool.type === "function") return tool;
+
+    // Chat Completions format
+    if ("function" in tool) {
+      const fn = tool.function;
+      return {
+        type: "function",
+        name: fn.name ?? "",
+        description: fn.description ?? "",
+        parameters: fn.parameters ?? {},
+      };
+    }
+
+    return null;
+  }).filter((t): t is Record<string, any> => t !== null);
+}
+
+// ---------------------------------------------------------------------------
+// Output conversion: Responses API → Chat Completions (reverse)
+// ---------------------------------------------------------------------------
+
+/**
+ * Convert a Responses API result to Chat Completions format.
+ */
+export function convertResponsesToChatCompletion(
+  responsesResult: Record<string, any>,
+  model: string
+): Record<string, any> {
+  const output = responsesResult.output ?? [];
+  let text = "";
+  let reasoningContent = "";
+  const toolCalls: Record<string, any>[] = [];
+
+  for (const item of output) {
+    const itemType = item.type ?? "";
+
+    if (itemType === "message") {
+      const contentParts = item.content ?? [];
+      for (const part of contentParts) {
+        if (part.type === "output_text") {
+          text += part.text ?? "";
+        }
+      }
+    } else if (itemType === "reasoning") {
+      const summaries = item.summary ?? [];
+      for (const s of summaries) {
+        if (s.type === "summary_text") {
+          reasoningContent += s.text ?? "";
+        }
+      }
+    } else if (itemType === "function_call") {
+      toolCalls.push({
+        id: item.call_id ?? item.id ?? "",
+        type: "function",
+        function: {
+          name: item.name ?? "",
+          arguments: item.arguments ?? "",
+        },
+      });
+    }
+  }
+
+  const usage = responsesResult.usage ?? {};
+
+  const message: Record<string, any> = { role: "assistant", content: text };
+  if (reasoningContent) message.reasoning_content = reasoningContent;
+  if (toolCalls.length > 0) message.tool_calls = toolCalls;
+
+  return {
+    id: responsesResult.id ?? "",
+    object: "chat.completion",
+    created: responsesResult.created_at ?? 0,
+    model,
+    choices: [
+      {
+        index: 0,
+        message,
+        finish_reason: toolCalls.length > 0 ? "tool_calls" : "stop",
+      },
+    ],
+    usage: {
+      prompt_tokens: usage.input_tokens ?? 0,
+      completion_tokens: usage.output_tokens ?? 0,
+      total_tokens: usage.total_tokens ?? 0,
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Streaming: Responses API SSE → Chat Completions SSE (reverse)
+// ---------------------------------------------------------------------------
+
+/**
+ * Convert a Responses API SSE stream to Chat Completions SSE stream.
+ *
+ * Parses `event:` / `data:` pairs from the upstream Responses API stream
+ * and converts them to standard Chat Completions SSE chunks.
+ */
+export async function* streamChatFromResponses(
+  providerStream: AsyncGenerator<Uint8Array> | AsyncIterable<Uint8Array>,
+  model: string
+): AsyncGenerator<Uint8Array> {
+  const chatId = `chatcmpl-${uuidv4().replace(/-/g, "").slice(0, 24)}`;
+  const created = Math.floor(Date.now() / 1000);
+  const textEncoder = new TextEncoder();
+  const decoder = new TextDecoder();
+
+  function chatChunk(
+    delta: Record<string, any>,
+    finishReason?: string | null,
+    usage?: Record<string, any> | null
+  ): Uint8Array {
+    const chunk: Record<string, any> = {
+      id: chatId,
+      object: "chat.completion.chunk",
+      created,
+      model,
+      choices: [{ index: 0, delta, finish_reason: finishReason ?? null }],
+    };
+    if (usage) chunk.usage = usage;
+    return textEncoder.encode(`data: ${JSON.stringify(chunk)}\n\n`);
+  }
+
+  let buffer = "";
+
+  for await (const rawChunk of providerStream) {
+    const text = decoder.decode(rawChunk, { stream: true });
+    buffer += text;
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? ""; // keep incomplete trailing line
+
+    let currentEvent = "";
+    for (const line of lines) {
+      const stripped = line.trim();
+      if (stripped.startsWith("event: ")) {
+        currentEvent = stripped.slice(7);
+        continue;
+      }
+      if (!stripped.startsWith("data: ")) {
+        currentEvent = "";
+        continue;
+      }
+
+      const data = stripped.slice(6);
+      if (data === "[DONE]") {
+        yield textEncoder.encode("data: [DONE]\n\n");
+        return;
+      }
+
+      let parsed: Record<string, any>;
+      try {
+        parsed = JSON.parse(data);
+      } catch {
+        currentEvent = "";
+        continue;
+      }
+
+      if (currentEvent === "response.output_text.delta") {
+        yield chatChunk({ content: parsed.delta ?? "" });
+      } else if (currentEvent === "response.reasoning_summary_text.delta") {
+        yield chatChunk({ reasoning_content: parsed.delta ?? "" });
+      } else if (currentEvent === "response.function_call_arguments.delta") {
+        yield chatChunk({
+          tool_calls: [
+            {
+              index: parsed.output_index ?? 0,
+              id: parsed.call_id ?? "",
+              type: "function",
+              function: { name: "", arguments: parsed.delta ?? "" },
+            },
+          ],
+        });
+      } else if (currentEvent === "response.completed") {
+        const resp = parsed.response ?? {};
+        const usageData = resp.usage ?? {};
+        const respOutput = resp.output ?? [];
+        const hasToolCalls = respOutput.some(
+          (i: Record<string, any>) => i.type === "function_call"
+        );
+        yield chatChunk(
+          {},
+          hasToolCalls ? "tool_calls" : "stop",
+          {
+            prompt_tokens: usageData.input_tokens ?? 0,
+            completion_tokens: usageData.output_tokens ?? 0,
+            total_tokens: usageData.total_tokens ?? 0,
+          }
+        );
+      }
+
+      currentEvent = "";
+    }
+  }
+
+  // Safety: emit DONE if stream ended without one
+  yield textEncoder.encode("data: [DONE]\n\n");
+}

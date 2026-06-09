@@ -630,8 +630,299 @@ async def stream_responses_api(
                     "response": completed_response,
                 })
 
+    yield b"data: [DONE]\n\n"
+
+
+# ---------------------------------------------------------------------------
+# Input conversion: Chat Completions → Responses API (reverse)
+# ---------------------------------------------------------------------------
+
+def convert_messages_to_responses_input(
+    messages: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Convert Chat Completions messages to Responses API input items.
+
+    Returns (input_items, instructions).
+    System messages are extracted as *instructions* rather than input items.
+    """
+    instructions: str | None = None
+    input_items: list[dict[str, Any]] = []
+
+    for msg in messages:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+
+        if role == "system":
+            # System messages become instructions
+            instructions = content if isinstance(content, str) else str(content)
+            continue
+
+        if role == "tool":
+            input_items.append({
+                "type": "function_call_output",
+                "call_id": msg.get("tool_call_id", ""),
+                "output": content if isinstance(content, str) else str(content),
+            })
+            continue
+
+        if role == "assistant":
+            # Check for tool calls
+            tool_calls = msg.get("tool_calls")
+            if tool_calls:
+                for tc in tool_calls:
+                    fn = tc.get("function", {})
+                    input_items.append({
+                        "type": "function_call",
+                        "call_id": tc.get("id", ""),
+                        "name": fn.get("name", ""),
+                        "arguments": fn.get("arguments", ""),
+                    })
+                continue
+
+            # Regular assistant message
+            input_items.append({
+                "type": "message",
+                "role": "assistant",
+                "content": _convert_chat_content_to_responses(content),
+            })
+            continue
+
+        # User message
+        input_items.append({
+            "type": "message",
+            "role": "user",
+            "content": _convert_chat_content_to_responses(content),
+        })
+
+    return input_items, instructions
+
+
+def _convert_chat_content_to_responses(content: Any) -> Any:
+    """Convert Chat Completions content parts to Responses API format."""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return str(content)
+
+    parts: list[dict[str, Any]] = []
+    for part in content:
+        ptype = part.get("type", "")
+        if ptype == "text":
+            parts.append({"type": "input_text", "text": part.get("text", "")})
+        elif ptype == "image_url":
+            url_data = part.get("image_url", {})
+            parts.append({
+                "type": "input_image",
+                "image_url": url_data.get("url", ""),
+                "detail": url_data.get("detail", "auto"),
+            })
+    return parts if parts else ""
+
+
+# ---------------------------------------------------------------------------
+# Tools conversion: Chat Completions → Responses API (reverse)
+# ---------------------------------------------------------------------------
+
+def convert_chat_tools_to_responses_tools(
+    tools: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Convert Chat Completions tools to Responses API tools format.
+
+    Chat Completions: { type: "function", function: { name, description, parameters } }
+    Responses API:    { type: "function", name, description, parameters }
+    """
+    result: list[dict[str, Any]] = []
+    for tool in tools:
+        # Already in Responses API format (no nested "function" key)
+        if "function" not in tool and tool.get("type") == "function":
+            result.append(tool)
+            continue
+        # Chat Completions format
+        if "function" in tool:
+            fn = tool["function"]
+            result.append({
+                "type": "function",
+                "name": fn.get("name", ""),
+                "description": fn.get("description", ""),
+                "parameters": fn.get("parameters", {}),
+            })
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Output conversion: Responses API → Chat Completions (reverse)
+# ---------------------------------------------------------------------------
+
+def convert_responses_to_chat_completion(
+    responses_result: dict[str, Any],
+    model: str,
+) -> dict[str, Any]:
+    """Convert a Responses API result to Chat Completions format."""
+
+    output = responses_result.get("output", [])
+    text = ""
+    reasoning_content = ""
+    tool_calls: list[dict[str, Any]] = []
+
+    for item in output:
+        item_type = item.get("type", "")
+
+        if item_type == "message":
+            content_parts = item.get("content", [])
+            for part in content_parts:
+                if part.get("type") == "output_text":
+                    text += part.get("text", "")
+
+        elif item_type == "reasoning":
+            summaries = item.get("summary", [])
+            for s in summaries:
+                if s.get("type") == "summary_text":
+                    reasoning_content += s.get("text", "")
+
+        elif item_type == "function_call":
+            tool_calls.append({
+                "id": item.get("call_id", item.get("id", "")),
+                "type": "function",
+                "function": {
+                    "name": item.get("name", ""),
+                    "arguments": item.get("arguments", ""),
+                },
+            })
+
+    usage = responses_result.get("usage", {})
+
+    message: dict[str, Any] = {"role": "assistant", "content": text}
+    if reasoning_content:
+        message["reasoning_content"] = reasoning_content
+    if tool_calls:
+        message["tool_calls"] = tool_calls
+
+    return {
+        "id": responses_result.get("id", ""),
+        "object": "chat.completion",
+        "created": responses_result.get("created_at", 0),
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "message": message,
+                "finish_reason": "tool_calls" if tool_calls else "stop",
+            }
+        ],
+        "usage": {
+            "prompt_tokens": usage.get("input_tokens", 0),
+            "completion_tokens": usage.get("output_tokens", 0),
+            "total_tokens": usage.get("total_tokens", 0),
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Streaming: Responses API SSE → Chat Completions SSE (reverse)
+# ---------------------------------------------------------------------------
+
+async def stream_chat_from_responses(
+    provider_stream: AsyncIterator[bytes],
+    model: str,
+) -> AsyncIterator[bytes]:
+    """Convert a Responses API SSE stream to Chat Completions SSE stream.
+
+    Parses ``event:`` / ``data:`` pairs from the upstream Responses API
+    stream and converts them to standard Chat Completions SSE chunks.
+    """
+
+    chat_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
+    created = int(time.time())
+
+    def _chat_chunk(
+        delta: dict[str, Any],
+        finish_reason: str | None = None,
+        usage: dict[str, Any] | None = None,
+    ) -> bytes:
+        chunk: dict[str, Any] = {
+            "id": chat_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+            "choices": [
+                {"index": 0, "delta": delta, "finish_reason": finish_reason}
+            ],
+        }
+        if usage:
+            chunk["usage"] = usage
+        return f"data: {json.dumps(chunk)}\n\n".encode("utf-8")
+
+    buffer = ""
+
+    async for raw_chunk in provider_stream:
+        text = raw_chunk.decode("utf-8") if isinstance(raw_chunk, bytes) else str(raw_chunk)
+        buffer += text
+        lines = buffer.split("\n")
+        buffer = lines.pop()  # keep incomplete trailing line
+
+        current_event = ""
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("event: "):
+                current_event = stripped[7:]
+                continue
+            if not stripped.startswith("data: "):
+                current_event = ""
+                continue
+
+            data = stripped[6:]
+            if data == "[DONE]":
                 yield b"data: [DONE]\n\n"
                 return
+
+            try:
+                parsed = json.loads(data)
+            except json.JSONDecodeError:
+                current_event = ""
+                continue
+
+            if current_event == "response.output_text.delta":
+                yield _chat_chunk({"content": parsed.get("delta", "")})
+
+            elif current_event == "response.reasoning_summary_text.delta":
+                yield _chat_chunk({"reasoning_content": parsed.get("delta", "")})
+
+            elif current_event == "response.function_call_arguments.delta":
+                yield _chat_chunk({
+                    "tool_calls": [
+                        {
+                            "index": parsed.get("output_index", 0),
+                            "id": parsed.get("call_id", ""),
+                            "type": "function",
+                            "function": {
+                                "name": "",
+                                "arguments": parsed.get("delta", ""),
+                            },
+                        }
+                    ],
+                })
+
+            elif current_event == "response.completed":
+                resp = parsed.get("response", {})
+                usage_data = resp.get("usage", {})
+                output = resp.get("output", [])
+                has_tool_calls = any(
+                    i.get("type") == "function_call" for i in output
+                )
+                yield _chat_chunk(
+                    {},
+                    finish_reason="tool_calls" if has_tool_calls else "stop",
+                    usage={
+                        "prompt_tokens": usage_data.get("input_tokens", 0),
+                        "completion_tokens": usage_data.get("output_tokens", 0),
+                        "total_tokens": usage_data.get("total_tokens", 0),
+                    },
+                )
+
+            current_event = ""
+
+    # Safety: emit DONE if stream ended without one
+    yield b"data: [DONE]\n\n"
 
     # If we reach here without finish_reason, still emit completed
     final_output = []

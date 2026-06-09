@@ -19,7 +19,7 @@ KEY_PREFIX = "sk-s12ryt-"
 
 
 # ---------------------------------------------------------------------------
-# Database lookup stub – replace with your actual DB layer
+# Database lookup with LRU cache
 # ---------------------------------------------------------------------------
 
 async def _lookup_api_key(key: str) -> dict[str, Any] | None:

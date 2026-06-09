@@ -4,7 +4,7 @@ CREATE_TABLE_PROVIDERS = """
 CREATE TABLE IF NOT EXISTS providers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT UNIQUE NOT NULL,
-    api_type TEXT NOT NULL CHECK(api_type IN ('openai', 'anthropic', 'google')),
+    api_type TEXT NOT NULL CHECK(api_type IN ('openai_chat', 'openai_response', 'anthropic', 'google')),
     base_url TEXT NOT NULL,
     api_key TEXT NOT NULL,
     models TEXT DEFAULT '',

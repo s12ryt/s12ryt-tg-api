@@ -10,6 +10,7 @@ import cors from "cors";
 import http from "http";
 import { authMiddleware } from "./middleware.js";
 import * as openaiProvider from "./providers/openai.js";
+import * as openaiResponseProvider from "./providers/openaiResponse.js";
 import * as anthropicProvider from "./providers/anthropic.js";
 import * as googleProvider from "./providers/google.js";
 import { extractUsage, calculateCost, recordUsage } from "./usageTracker.js";
@@ -56,8 +57,9 @@ function writeAndFlush(res: Response, data: Uint8Array | string): void {
 // Provider modules
 // ---------------------------------------------------------------------------
 
-const PROVIDER_MODULES: Record<string, { chatCompletion: (data: any, config: any) => Promise<any> }> = {
-  openai: openaiProvider,
+const PROVIDER_MODULES: Record<string, any> = {
+  openai_chat: openaiProvider,
+  openai_response: openaiResponseProvider,
   anthropic: anthropicProvider,
   google: googleProvider,
 };
@@ -414,12 +416,13 @@ app.post(
 
       // Streaming response
       if (isStream && result && typeof result[Symbol.asyncIterator] === "function") {
-        console.log("[DEBUG] Entering streaming path for /v1/chat/completions");
         res.setHeader("Content-Type", "text/event-stream");
         res.setHeader("Cache-Control", "no-cache");
         res.setHeader("Connection", "keep-alive");
         res.setHeader("X-Accel-Buffering", "no");
         res.flushHeaders();
+
+        console.log(`[DEBUG] Entering streaming for /v1/chat/completions model=${actualModel}`);
 
         try {
           let chunkCount = 0;
@@ -427,7 +430,6 @@ app.post(
             result as AsyncIterable<Uint8Array>,
             (chunk) => { chunkCount++; writeAndFlush(res, chunk); },
           );
-          console.log(`[DEBUG] Stream finished, ${chunkCount} chunks sent, usage=${JSON.stringify(streamUsage)}`);
 
           // Record streaming usage
           if (streamUsage.input_tokens > 0 || streamUsage.output_tokens > 0) {
@@ -453,6 +455,8 @@ app.post(
               console.error("Failed to record streaming usage:", err);
             }
           }
+
+          console.log(`[DEBUG] Stream finished for /v1/chat/completions model=${actualModel}`);
         } catch (err: any) {
           console.error("Stream error:", err);
         } finally {
@@ -528,7 +532,101 @@ app.post(
         return;
       }
 
-      // Resolve model → provider (with fallback support)
+      // Optimization: for openai_response providers in non-coding mode, pass through directly
+      const isCodingResp = modelName === "coding-mode";
+      const isStreamResp = body.stream === true;
+
+      if (!isCodingResp) {
+        let _resolved: ResolvedProvider;
+        try {
+          _resolved = lookupModelDb(modelName);
+        } catch (err: any) {
+          const statusCode = err.message?.includes("Unknown model") ? 400 : 502;
+          res.status(statusCode).json({
+            error: { message: err.message, type: statusCode === 400 ? "invalid_request_error" : "upstream_error" },
+          });
+          return;
+        }
+
+        if (_resolved.providerType === "openai_response") {
+          try {
+            const result = await openaiResponseProvider.responsesApi(body, _resolved.config);
+
+            if (isStreamResp && result && Symbol.asyncIterator in Object(result)) {
+              res.setHeader("Content-Type", "text/event-stream");
+              res.setHeader("Cache-Control", "no-cache");
+              res.setHeader("Connection", "keep-alive");
+              res.setHeader("X-Accel-Buffering", "no");
+              res.flushHeaders();
+
+              try {
+                const streamUsage = await forwardStreamAndExtractUsage(
+                  result as AsyncIterable<Uint8Array>,
+                  (chunk) => { writeAndFlush(res, chunk); },
+                );
+                if (streamUsage.input_tokens > 0 || streamUsage.output_tokens > 0) {
+                  try {
+                    const cost = calculateCost(_resolved.inputPrice, _resolved.outputPrice, streamUsage.input_tokens, streamUsage.output_tokens);
+                    const auth = req.auth;
+                    if (auth) {
+                      await recordUsage({
+                        apiKeyId: auth.apiKeyId,
+                        providerId: String(_resolved.providerId),
+                        inputTokens: streamUsage.input_tokens,
+                        outputTokens: streamUsage.output_tokens,
+                        inputCost: cost.input_cost,
+                        outputCost: cost.output_cost,
+                        model: modelName,
+                      });
+                    }
+                  } catch (err) {
+                    console.error("Failed to record streaming usage:", err);
+                  }
+                }
+              } catch (err: any) {
+                console.error("Responses direct stream error:", err);
+              } finally {
+                res.end();
+              }
+              return;
+            }
+
+            if (result && typeof result === "object") {
+              const _u = (result as any).usage ?? {};
+              const _inT: number = _u.input_tokens ?? 0;
+              const _outT: number = _u.output_tokens ?? 0;
+              try {
+                if (_inT > 0 || _outT > 0) {
+                  const cost = calculateCost(_resolved.inputPrice, _resolved.outputPrice, _inT, _outT);
+                  const auth = req.auth;
+                  if (auth) {
+                    await recordUsage({
+                      apiKeyId: auth.apiKeyId,
+                      providerId: String(_resolved.providerId),
+                      inputTokens: _inT,
+                      outputTokens: _outT,
+                      inputCost: cost.input_cost,
+                      outputCost: cost.output_cost,
+                      model: modelName,
+                    });
+                  }
+                }
+              } catch (err) {
+                console.error("Failed to record usage:", err);
+              }
+              res.json(result);
+              return;
+            }
+          } catch (err: any) {
+            res.status(502).json({
+              error: { message: err.message, type: "upstream_error" },
+            });
+            return;
+          }
+        }
+      }
+
+      // Standard flow: convert Responses → Chat → dispatch → convert back
       let providerType: string;
       let providerId: number;
       let providerConfig: { baseUrl: string; apiKey: string };
@@ -598,12 +696,13 @@ app.post(
 
       // Streaming: convert Chat Completions SSE → Responses API SSE
       if (isStream && result2 && typeof result2[Symbol.asyncIterator] === "function") {
-        console.log("[DEBUG] Entering streaming path for /v1/responses");
         res.setHeader("Content-Type", "text/event-stream");
         res.setHeader("Cache-Control", "no-cache");
         res.setHeader("Connection", "keep-alive");
         res.setHeader("X-Accel-Buffering", "no");
         res.flushHeaders();
+
+        console.log(`[DEBUG] Entering streaming for /v1/responses model=${actualModel}`);
 
         try {
           let chunkCount = 0;
@@ -622,7 +721,6 @@ app.post(
               }
             },
           );
-          console.log(`[DEBUG] /v1/responses stream finished, ${chunkCount} chunks sent, usage=${JSON.stringify(streamUsage)}`);
 
           // Record streaming usage
           if (streamUsage.input_tokens > 0 || streamUsage.output_tokens > 0) {
@@ -647,6 +745,8 @@ app.post(
               console.error("Failed to record streaming usage:", err);
             }
           }
+
+          console.log(`[DEBUG] Stream finished for /v1/responses model=${actualModel}`);
         } catch (err: any) {
           console.error("Responses stream error:", err);
         } finally {
@@ -766,12 +866,13 @@ app.post(
 
       // Streaming: convert OpenAI SSE → Anthropic SSE
       if (isStream && result && typeof result[Symbol.asyncIterator] === "function") {
-        console.log("[DEBUG] Entering streaming path for /v1/messages");
         res.setHeader("Content-Type", "text/event-stream");
         res.setHeader("Cache-Control", "no-cache");
         res.setHeader("Connection", "keep-alive");
         res.setHeader("X-Accel-Buffering", "no");
         res.flushHeaders();
+
+        console.log(`[DEBUG] Entering streaming for /v1/messages model=${actualModel}`);
 
         try {
           let chunkCount = 0;
@@ -785,7 +886,6 @@ app.post(
               }
             },
           );
-          console.log(`[DEBUG] /v1/messages stream finished, ${chunkCount} chunks sent, usage=${JSON.stringify(streamUsage)}`);
 
           // Record streaming usage
           if (streamUsage.input_tokens > 0 || streamUsage.output_tokens > 0) {
@@ -810,6 +910,8 @@ app.post(
               console.error("Failed to record streaming usage:", err);
             }
           }
+
+          console.log(`[DEBUG] Stream finished for /v1/messages model=${actualModel}`);
         } catch (err: any) {
           console.error("Anthropic stream error:", err);
         } finally {

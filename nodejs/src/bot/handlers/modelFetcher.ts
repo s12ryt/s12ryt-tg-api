@@ -1,7 +1,7 @@
 /**
  * Utility: fetch provider model list and pricing from external APIs.
  *
- * 1. Fetches /v1/models from the provider's base_url + api_key
+ * 1. Fetches models from the provider's base_url + /model endpoint
  * 2. Fetches pricing from https://models.dev/api.json
  */
 
@@ -67,7 +67,7 @@ async function getModelsDevData(): Promise<ModelsDevData> {
 }
 
 // ---------------------------------------------------------------------------
-// Fetch model list from provider's /v1/models endpoint
+// Fetch model list from provider's /model endpoint
 // ---------------------------------------------------------------------------
 
 export async function fetchProviderModels(
@@ -76,26 +76,22 @@ export async function fetchProviderModels(
   apiType: string
 ): Promise<FetchedModel[]> {
   try {
-    // Normalize base URL: strip trailing slashes and /v1 suffix
-    let cleanBase = baseUrl.replace(/\/+$/, "");
-    if (cleanBase.endsWith("/v1")) {
-      cleanBase = cleanBase.slice(0, -3);
-    }
-
-    // Build the models endpoint URL
+    // Build models endpoint: baseUrl + /model (or + model if trailing /)
     let modelsUrl: string;
-    if (apiType === "google") {
-      modelsUrl = `${cleanBase}/v1beta/models?key=${apiKey}`;
+    if (baseUrl.endsWith("/")) {
+      modelsUrl = `${baseUrl}model`;
     } else {
-      modelsUrl = `${cleanBase}/v1/models`;
+      modelsUrl = `${baseUrl}/model`;
     }
 
+    // Set authentication headers / URL params based on apiType
     const headers: Record<string, string> = {};
-    if (apiType === "anthropic") {
+    if (apiType === "google") {
+      const separator = modelsUrl.includes("?") ? "&" : "?";
+      modelsUrl = `${modelsUrl}${separator}key=${encodeURIComponent(apiKey)}`;
+    } else if (apiType === "anthropic") {
       headers["x-api-key"] = apiKey;
       headers["anthropic-version"] = "2023-06-01";
-    } else if (apiType === "google") {
-      // Key is in URL already
     } else {
       headers["Authorization"] = `Bearer ${apiKey}`;
     }
@@ -106,7 +102,8 @@ export async function fetchProviderModels(
     });
 
     if (!resp.ok) {
-      throw new Error(`HTTP ${resp.status}`);
+      console.warn(`[fetchModels] ${modelsUrl} returned HTTP ${resp.status}, skipping model list`);
+      return [];
     }
 
     const json = await resp.json() as any;
@@ -181,4 +178,102 @@ export async function fetchModelsPricing(
   }
 
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// Detect supported API protocols by probing endpoints
+// ---------------------------------------------------------------------------
+
+export interface ProtocolStatus {
+  openai_chat: boolean;
+  openai_response: boolean;
+  anthropic: boolean;
+  google: boolean;
+}
+
+function buildUrl(baseUrl: string, path: string): string {
+  if (baseUrl.endsWith("/")) {
+    return `${baseUrl}${path.replace(/^\//, "")}`;
+  }
+  return `${baseUrl}/${path.replace(/^\//, "")}`;
+}
+
+async function probeGet(url: string, headers: Record<string, string>): Promise<boolean> {
+  try {
+    await fetch(url, { headers, signal: AbortSignal.timeout(15_000) });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function probePost(
+  url: string,
+  headers: Record<string, string>,
+  body: Record<string, unknown>
+): Promise<boolean> {
+  try {
+    await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(15_000),
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Probe the provider to detect which API protocols are supported.
+ *
+ * Sends GET + POST requests in parallel with 15s timeout per protocol.
+ * A protocol is "reachable" if the server returns ANY HTTP response
+ * (including 4xx) — only network-level failures count as unreachable.
+ */
+export async function detectApiProtocols(
+  baseUrl: string,
+  apiKey: string
+): Promise<ProtocolStatus> {
+  const bearer: Record<string, string> = { Authorization: `Bearer ${apiKey}` };
+  const bearerJson: Record<string, string> = {
+    ...bearer,
+    "content-type": "application/json",
+  };
+  const anthropicHeaders: Record<string, string> = {
+    "x-api-key": apiKey,
+    "anthropic-version": "2023-06-01",
+    "content-type": "application/json",
+  };
+
+  // Run all probes in parallel
+  const [chatGet, chatPost, responsePost, anthropicPost, googleGet] = await Promise.all([
+    // openai_chat: GET /models + POST /chat/completions
+    probeGet(buildUrl(baseUrl, "/models"), bearer),
+    probePost(buildUrl(baseUrl, "/chat/completions"), bearerJson, {}),
+
+    // openai_response: POST /responses
+    probePost(buildUrl(baseUrl, "/responses"), bearerJson, {}),
+
+    // anthropic: POST /v1/messages (minimal body)
+    probePost(buildUrl(baseUrl, "/v1/messages"), anthropicHeaders, {
+      model: "claude-3-5-sonnet-20241022",
+      max_tokens: 1,
+      messages: [{ role: "user", content: "hi" }],
+    }),
+
+    // google: GET /models?key=
+    probeGet(
+      `${buildUrl(baseUrl, "/models")}?key=${encodeURIComponent(apiKey)}`,
+      {}
+    ),
+  ]);
+
+  return {
+    openai_chat: chatGet || chatPost,
+    openai_response: responsePost,
+    anthropic: anthropicPost,
+    google: googleGet,
+  };
 }

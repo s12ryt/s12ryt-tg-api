@@ -25,7 +25,7 @@ import {
   type User,
   type ApiKey,
 } from "../../db/database.js";
-import { fetchProviderModels, fetchModelsPricing } from "./modelFetcher.js";
+import { fetchProviderModels, fetchModelsPricing, detectApiProtocols } from "./modelFetcher.js";
 
 // ========================
 // Types
@@ -72,22 +72,7 @@ async function addConversation(
     return;
   }
 
-  // Step 2: API type
-  await ctx.reply("請選擇 API 類型：\n1️⃣ openai\n2️⃣ anthropic\n3️⃣ google\n\n請輸入 1/2/3：");
-  ctx = await conversation.wait();
-  const typeInput = ctx.msg?.text?.trim();
-  const typeMap: Record<string, string> = {
-    "1": "openai",
-    "2": "anthropic",
-    "3": "google",
-  };
-  const apiType = typeMap[typeInput ?? ""] ?? typeInput;
-  if (apiType !== "openai" && apiType !== "anthropic" && apiType !== "google") {
-    await ctx.reply("❌ 無效的 API 類型，已取消。");
-    return;
-  }
-
-  // Step 3: Base URL
+  // Step 2: Base URL
   await ctx.reply("請輸入 Base URL：");
   ctx = await conversation.wait();
   const baseUrl = ctx.msg?.text?.trim();
@@ -96,7 +81,7 @@ async function addConversation(
     return;
   }
 
-  // Step 4: API key
+  // Step 3: API key
   await ctx.reply("請輸入 API Key：");
   ctx = await conversation.wait();
   const apiKey = ctx.msg?.text?.trim();
@@ -105,8 +90,54 @@ async function addConversation(
     return;
   }
 
+  // Step 4: Auto-detect API protocols
+  await ctx.reply("🔍 正在偵測 API 協議連通性...");
+  let detectedProtocols: Record<string, boolean>;
+  try {
+    detectedProtocols = await detectApiProtocols(baseUrl, apiKey) as unknown as Record<string, boolean>;
+  } catch {
+    detectedProtocols = {};
+  }
+
+  const typeMap: Record<string, string> = {
+    "1": "openai_chat",
+    "2": "openai_response",
+    "3": "anthropic",
+    "4": "google",
+  };
+  const VALID_TYPES = ["openai_chat", "openai_response", "anthropic", "google"];
+
+  // Build protocol status display
+  const protocolLabels: Record<string, string> = {
+    openai_chat: "openai_chat (Chat Completions)",
+    openai_response: "openai_response (Responses API)",
+    anthropic: "anthropic",
+    google: "google",
+  };
+  const protocolLines = Object.entries(protocolLabels).map(([key, label]) => {
+    const reachable = detectedProtocols[key] ? "✅ 可連通" : "❌ 無法連通";
+    return `${label}：${reachable}`;
+  });
+
+  const anyReachable = Object.values(detectedProtocols).some(Boolean);
+  const noticeLine = anyReachable
+    ? ""
+    : "\n⚠️ 自動偵測不到任何可用的 API 協議，請手動確認後選擇類型。";
+
+  await ctx.reply(
+    `📋 API 協議連通性偵測結果：\n\n${protocolLines.join("\n")}${noticeLine}\n\n` +
+    `請選擇 API 類型：\n1️⃣ openai_chat (Chat Completions)\n2️⃣ openai_response (Responses API)\n3️⃣ anthropic\n4️⃣ google\n\n請輸入 1/2/3/4：`
+  );
+
+  ctx = await conversation.wait();
+  const typeInput = ctx.msg?.text?.trim();
+  const apiType = typeMap[typeInput ?? ""] ?? typeInput;
+  if (!VALID_TYPES.includes(apiType)) {
+    await ctx.reply("❌ 無效的 API 類型，已取消。");
+    return;
+  }
+
   // ── Step 5: Models ──────────────────────────────────────────
-  // Auto-fetch from provider's /v1/models endpoint
   await ctx.reply("🔍 正在從提供商獲取模型列表...");
   let models = "";
   let fetchedModels = await fetchProviderModels(baseUrl, apiKey, apiType);

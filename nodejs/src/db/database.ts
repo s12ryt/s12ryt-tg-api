@@ -68,7 +68,7 @@ function createTables(db: SqlJsDatabase): void {
     CREATE TABLE IF NOT EXISTS providers (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL UNIQUE,
-      api_type TEXT NOT NULL CHECK(api_type IN ('openai', 'anthropic', 'google')),
+      api_type TEXT NOT NULL CHECK(api_type IN ('openai_chat', 'openai_response', 'anthropic', 'google')),
       base_url TEXT NOT NULL,
       api_key TEXT NOT NULL,
       models TEXT NOT NULL DEFAULT '',
@@ -174,6 +174,46 @@ function createTables(db: SqlJsDatabase): void {
     } catch {
       // Column already exists — ignore
     }
+  }
+
+  // Migration: openai → openai_chat (split api_type)
+  const migrationRow = db.exec(
+    "SELECT value FROM settings WHERE key = 'migration_openai_split'"
+  );
+  if (!migrationRow.length) {
+    console.log("[db] Running migration: openai → openai_chat");
+    db.run("PRAGMA foreign_keys = OFF");
+
+    db.run(`
+      CREATE TABLE IF NOT EXISTS providers_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE,
+        api_type TEXT NOT NULL CHECK(api_type IN ('openai_chat', 'openai_response', 'anthropic', 'google')),
+        base_url TEXT NOT NULL,
+        api_key TEXT NOT NULL,
+        models TEXT NOT NULL DEFAULT '',
+        enabled INTEGER NOT NULL DEFAULT 1,
+        input_price REAL,
+        output_price REAL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `);
+    db.run(`
+      INSERT INTO providers_new
+      SELECT id, name,
+        CASE WHEN api_type = 'openai' THEN 'openai_chat' ELSE api_type END,
+        base_url, api_key, models, enabled, input_price, output_price, created_at, updated_at
+      FROM providers
+    `);
+    db.run("DROP TABLE providers");
+    db.run("ALTER TABLE providers_new RENAME TO providers");
+
+    db.run("PRAGMA foreign_keys = ON");
+    db.run(
+      "INSERT INTO settings (key, value) VALUES ('migration_openai_split', '1')"
+    );
+    console.log("[db] Migration complete: openai → openai_chat");
   }
 
   saveDb();
@@ -530,7 +570,7 @@ export function enqueueUsage(record: PendingUsage): void {
 export interface Provider {
   id: number;
   name: string;
-  api_type: "openai" | "anthropic" | "google";
+  api_type: "openai_chat" | "openai_response" | "anthropic" | "google";
   base_url: string;
   api_key: string;
   models: string;

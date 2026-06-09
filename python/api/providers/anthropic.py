@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
-import time
+import asyncio
 import uuid
 from typing import Any, AsyncIterator
 
@@ -280,7 +280,7 @@ async def _do_request(
                     MAX_RETRIES + 1,
                     exc,
                 )
-                time.sleep(RETRY_DELAY * (attempt + 1))
+                await asyncio.sleep(RETRY_DELAY * (attempt + 1))
                 continue
 
             raise _wrap_error(exc) from exc
@@ -388,19 +388,6 @@ def _build_stream_chunk(
             "total_tokens": usage.get("input_tokens", 0) + usage.get("output_tokens", 0),
         }
     return chunk
-
-
-# ---------------------------------------------------------------------------
-# Usage extraction
-# ---------------------------------------------------------------------------
-
-def extract_usage(response_data: dict[str, Any]) -> dict[str, int]:
-    """Extract token usage from an already-converted OpenAI-format response."""
-    usage = response_data.get("usage", {})
-    return {
-        "input_tokens": usage.get("prompt_tokens", 0),
-        "output_tokens": usage.get("completion_tokens", 0),
-    }
 
 
 # ---------------------------------------------------------------------------

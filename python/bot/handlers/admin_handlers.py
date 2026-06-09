@@ -13,7 +13,7 @@ from telegram.ext import ContextTypes, ConversationHandler
 from config import Config
 from db import database
 from bot.keyboards import make_numbered_list_keyboard
-from bot.handlers.model_fetcher import fetch_provider_models, fetch_models_pricing
+from bot.handlers.model_fetcher import fetch_provider_models, fetch_models_pricing, detect_api_protocols
 
 logger = logging.getLogger(__name__)
 
@@ -62,43 +62,71 @@ async def add_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 async def add_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Receive provider name."""
+    """Receive provider name, then ask for base URL."""
     context.user_data["new_provider"] = {"name": update.message.text.strip()}
-    await update.message.reply_text(
-        "請選擇 API 類型：\n"
-        "1. openai\n"
-        "2. anthropic\n"
-        "3. google\n\n"
-        "請回覆數字或名稱："
-    )
-    return ADD_PROVIDER_TYPE
-
-
-async def add_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Receive provider API type."""
-    text = update.message.text.strip().lower()
-    type_map = {"1": "openai", "2": "anthropic", "3": "google"}
-    api_type = type_map.get(text, text)
-
-    if api_type not in ("openai", "anthropic", "google"):
-        await update.message.reply_text("❌ 無效的類型，請輸入 openai/anthropic/google 或 1/2/3：")
-        return ADD_PROVIDER_TYPE
-
-    context.user_data["new_provider"]["api_type"] = api_type
     await update.message.reply_text("請輸入 API Base URL（如: https://api.openai.com/v1）：")
     return ADD_PROVIDER_URL
 
 
 async def add_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Receive provider base URL."""
+    """Receive provider base URL, then ask for API key."""
     context.user_data["new_provider"]["base_url"] = update.message.text.strip()
     await update.message.reply_text("請輸入 API Key：")
     return ADD_PROVIDER_KEY
 
 
 async def add_key(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Receive provider API key, then auto-fetch models."""
+    """Receive provider API key, auto-detect protocols, then ask user to select type."""
     context.user_data["new_provider"]["api_key"] = update.message.text.strip()
+    provider = context.user_data["new_provider"]
+
+    # Auto-detect supported API protocols
+    await update.message.reply_text("🔍 正在偵測 API 端點支持的協議...")
+    protocols = await detect_api_protocols(provider["base_url"], provider["api_key"])
+
+    # Build display with reachability status
+    protocol_labels = {
+        "openai_chat": "openai (Chat Completions)",
+        "openai_response": "openai_response (Responses API)",
+        "anthropic": "anthropic",
+        "google": "google",
+    }
+    type_map = {"1": "openai_chat", "2": "openai_response", "3": "anthropic", "4": "google"}
+
+    any_reachable = any(protocols.values())
+    lines = []
+    for i, (key, label) in enumerate(protocol_labels.items(), 1):
+        status = "✅ 可連通" if protocols.get(key) else "❌ 無法連通"
+        lines.append(f"{i}. {label} — {status}")
+
+    if any_reachable:
+        await update.message.reply_text(
+            "📡 API 端點偵測結果：\n\n"
+            + "\n".join(lines)
+            + "\n\n請選擇 API 類型（輸入數字或名稱）："
+        )
+    else:
+        await update.message.reply_text(
+            "📡 API 端點偵測結果：\n\n"
+            + "\n".join(lines)
+            + "\n\n⚠️ 自動偵測不到任何可用的 API 協議，請手動確認後選擇類型："
+        )
+
+    context.user_data["detected_protocols"] = protocols
+    return ADD_PROVIDER_TYPE
+
+
+async def add_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Receive provider API type, then auto-fetch models."""
+    text = update.message.text.strip().lower()
+    type_map = {"1": "openai_chat", "2": "openai_response", "3": "anthropic", "4": "google"}
+    api_type = type_map.get(text, text)
+
+    if api_type not in ("openai_chat", "openai_response", "anthropic", "google"):
+        await update.message.reply_text("❌ 無效的類型，請輸入 openai_chat/openai_response/anthropic/google 或 1/2/3/4：")
+        return ADD_PROVIDER_TYPE
+
+    context.user_data["new_provider"]["api_type"] = api_type
 
     # Auto-fetch models from provider
     provider = context.user_data["new_provider"]

@@ -5,9 +5,6 @@
  * Input/Output: Standard OpenAI chat completion format.
  */
 
-// RequestInit type from the Fetch API standard
-type FetchRequestInit = globalThis.RequestInit;
-
 const DEFAULT_TIMEOUT = 120_000;
 const MAX_RETRIES = 2;
 const RETRY_DELAY = 500; // ms

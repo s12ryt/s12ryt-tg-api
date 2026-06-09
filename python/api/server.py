@@ -54,10 +54,10 @@ app.add_middleware(AuthMiddleware)
 # **Replace** with database-driven lookups in production.
 MODEL_REGISTRY: dict[str, tuple[str, str]] = {
     # OpenAI
-    "gpt-4o": ("openai", "openai-main"),
-    "gpt-4o-mini": ("openai", "openai-main"),
-    "gpt-4-turbo": ("openai", "openai-main"),
-    "gpt-3.5-turbo": ("openai", "openai-main"),
+    "gpt-4o": ("openai_chat", "openai-main"),
+    "gpt-4o-mini": ("openai_chat", "openai-main"),
+    "gpt-4-turbo": ("openai_chat", "openai-main"),
+    "gpt-3.5-turbo": ("openai_chat", "openai-main"),
     # Anthropic
     "claude-3.5-sonnet": ("anthropic", "anthropic-main"),
     "claude-3.5-haiku": ("anthropic", "anthropic-main"),
@@ -92,7 +92,8 @@ PROVIDER_CONFIGS: dict[str, dict[str, Any]] = {
 # ---------------------------------------------------------------------------
 
 PROVIDER_MODULES = {
-    "openai": prov.openai,
+    "openai_chat": prov.openai,
+    "openai_response": prov.openai_response,
     "anthropic": prov.anthropic,
     "google": prov.google,
 }
@@ -568,7 +569,81 @@ async def responses_endpoint(request: Request):
             content={"error": {"message": "input is required", "type": "invalid_request_error"}},
         )
 
-    # 2. Convert Responses input → Chat Completions messages
+    # 2a. Optimization: for openai_response providers, pass through directly (no conversion)
+    is_coding = original_model == "coding-mode"
+    is_stream = body.get("stream", False)
+
+    if not is_coding:
+        try:
+            _pt, _pid, _pcfg, _ip, _op = await _resolve_model_full(model_name)
+        except ValueError as exc:
+            return JSONResponse(
+                status_code=400,
+                content={"error": {"message": str(exc), "type": "invalid_request_error"}},
+            )
+        except Exception as exc:
+            logger.exception("Provider lookup failed for model %s", model_name)
+            return JSONResponse(
+                status_code=502,
+                content={"error": {"message": str(exc), "type": "upstream_error"}},
+            )
+
+        if _pt == "openai_response":
+            try:
+                result = await prov.openai_response.responses_api(body, _pcfg)
+            except Exception as exc:
+                logger.exception("Provider request failed for model %s", model_name)
+                return JSONResponse(
+                    status_code=502,
+                    content={"error": {"message": str(exc), "type": "upstream_error"}},
+                )
+
+            if is_stream and isinstance(result, AsyncIterator):
+                wrapped = _stream_with_usage_raw(
+                    result,
+                    request=request,
+                    provider_type=_pt,
+                    provider_id=_pid,
+                    model_name=model_name,
+                    input_price=_ip,
+                    output_price=_op,
+                    is_coding_mode=False,
+                )
+                return StreamingResponse(
+                    wrapped,
+                    media_type="text/event-stream",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                        "X-Accel-Buffering": "no",
+                    },
+                )
+
+            if isinstance(result, dict):
+                _u = result.get("usage", {})
+                _in_t = _u.get("input_tokens", 0)
+                _out_t = _u.get("output_tokens", 0)
+                try:
+                    if _in_t > 0 or _out_t > 0:
+                        cost = calculate_cost(_ip, _op, _in_t, _out_t)
+                        user_id = getattr(request.state, "user_id", None)
+                        api_key_id = getattr(request.state, "api_key_id", None)
+                        if user_id and api_key_id:
+                            await record_usage(
+                                api_key_id=api_key_id,
+                                provider_id=_pid,
+                                input_tokens=_in_t,
+                                output_tokens=_out_t,
+                                input_cost=cost["input_cost"],
+                                output_cost=cost["output_cost"],
+                                model=model_name,
+                            )
+                except Exception:
+                    logger.exception("Failed to record usage")
+
+                return JSONResponse(content=result)
+
+    # 2b. Standard flow: convert Responses → Chat → dispatch → convert back
     instructions = body.get("instructions")
     messages = convert_responses_input_to_messages(input_data, instructions)
 
