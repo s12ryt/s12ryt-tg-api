@@ -9,6 +9,8 @@
 - **多供應商聚合** — 統一管理 OpenAI / Anthropic / Google 等 AI API
 - **OpenAI 相容 API** — 對外暴露 `/v1/chat/completions`、`/v1/responses` 端點，可直接替換現有 OpenAI 客戶端
 - **Anthropic 相容 API** — 提供 `/v1/messages` 端點，相容 Anthropic Messages API 格式
+- **格式自動轉換** — 三種 API 格式（Chat Completions / Responses / Messages）之間自動雙向轉換，任一端點可路由到任意供應商
+- **API 協議自動偵測** — 新增供應商時自動 ping 各端點，顯示連通狀態輔助選擇類型
 - **Telegram Bot 管理** — 所有操作透過 Telegram Bot 完成，無需 Web 後台
 - **每模型獨立定價** — 自動從 [models.dev](https://models.dev) 獲取各模型定價（USD / 1M tokens），支援 per-model 計費
 - **Token 用量追蹤** — 自動記錄每個 API Key 的輸入/輸出 Token 數與費用
@@ -19,16 +21,18 @@
 ## 架構
 
 ```
-┌──────────────┐     ┌───────────────┐     ┌───────────┐     ┌──────────────────┐     ┌──────────────┐
-│  Telegram    │────▶│  Bot Handlers │────▶│ SQLite DB │     │  API Proxy       │────▶│  AI Providers│
-│  User / Admin│     │  (指令處理)    │     │           │     │  (/v1/chat/...)  │     │              │
-└──────────────┘     └───────────────┘     └─────┬─────┘     └────────┬─────────┘     ├──────────────┤
-                           ▲                     │                    │               │  OpenAI      │
-                           │                     └────────────────────┘               ├──────────────┤
-                           │                     (API Key 驗證 & 用量記錄)              │  Anthropic   │
-                           └──────────────────────────────────────────────────────────├──────────────┤
-                                                                                       │  Google      │
-                                                                                       └──────────────┘
+┌──────────────┐     ┌───────────────┐     ┌───────────┐     ┌──────────────────┐     ┌──────────────────┐
+│  Telegram    │────▶│  Bot Handlers │────▶│ SQLite DB │     │  API Proxy       │────▶│  AI Providers    │
+│  User / Admin│     │  (指令處理)    │     │           │     │  (/v1/chat/...)  │     │                  │
+└──────────────┘     └───────────────┘     └─────┬─────┘     └────────┬─────────┘     ├──────────────────┤
+                           ▲                     │                    │               │  OpenAI Chat     │
+                           │                     └────────────────────┘               ├──────────────────┤
+                           │                     (API Key 驗證 & 用量記錄)              │  OpenAI Response │
+                           └──────────────────────────────────────────────────────────├──────────────────┤
+                                                                                       │  Anthropic       │
+                                                                                       ├──────────────────┤
+                                                                                       │  Google          │
+                                                                                       └──────────────────┘
 ```
 
 ## Bot 指令
@@ -52,7 +56,7 @@
 
 | 指令 | 說明 |
 |------|------|
-| `/add` | 新增 AI 供應商（多輪對話） |
+| `/add` | 新增 AI 供應商（多輪對話：名稱 → 端點 → Key → 自動偵測協議 → 選擇類型 → 模型 → 定價） |
 | `/del` | 刪除供應商（支援多選） |
 | `/list` | 列出所有供應商及其用量統計 |
 | `/edit` | 編輯供應商設定（多輪對話） |
@@ -154,11 +158,22 @@ curl http://localhost:8000/v1/chat/completions \
 
 ## 支援的供應商
 
-| 供應商 | API 類型 | 認證方式 |
-|--------|----------|----------|
-| OpenAI | `openai` | `Authorization: Bearer {key}` |
-| Anthropic | `anthropic` | `x-api-key: {key}` 標頭 |
-| Google | `google` | `?key={key}` 查詢參數 |
+| 供應商 | API 類型 | 說明 | 認證方式 |
+|--------|----------|------|----------|
+| OpenAI (Chat Completions) | `openai_chat` | OpenAI 相容 `/chat/completions` 端點 | `Authorization: Bearer {key}` |
+| OpenAI (Responses API) | `openai_response` | OpenAI 新版 `/responses` 端點 | `Authorization: Bearer {key}` |
+| Anthropic | `anthropic` | Anthropic Messages API | `x-api-key: {key}` 標頭 |
+| Google | `google` | Google Gemini API | `?key={key}` 查詢參數 |
+
+> 💡 新增供應商時，系統會自動偵測端點支援的 API 協議並顯示連通狀態（✅/❌），輔助你選擇正確的類型。三種 API 格式之間會自動轉換，你只需要關注上游供應商實際支援的協議。
+
+### 格式轉換矩陣
+
+| 請求端點 | openai_chat 供應商 | openai_response 供應商 | anthropic 供應商 | google 供應商 |
+|----------|-------------------|----------------------|-----------------|--------------|
+| `/v1/chat/completions` | 直接轉發 | chat→responses→chat | chat→messages→chat | 直接轉發 |
+| `/v1/responses` | responses→chat→responses | 直接轉發 | responses→chat→messages→responses | responses→chat→responses |
+| `/v1/messages` | messages→chat→messages | messages→chat→responses→messages | 直接轉發 | messages→chat→messages |
 
 ## 專案結構
 
@@ -176,7 +191,8 @@ s12ryt-tg-api/
 │   │   ├── responses.py             # 回應格式處理
 │   │   ├── anthropic_out.py         # Anthropic 輸出轉換
 │   │   └── providers/               # 各供應商適配器
-│   │       ├── openai.py
+│   │       ├── openai.py            #   openai_chat (Chat Completions)
+│   │       ├── openai_response.py   #   openai_response (Responses API)
 │   │       ├── anthropic.py
 │   │       └── google.py
 │   ├── bot/                         # Telegram Bot
@@ -203,6 +219,10 @@ s12ryt-tg-api/
 │   │   │   ├── responses.ts
 │   │   │   ├── anthropic_out.ts
 │   │   │   └── providers/           # 各供應商適配器
+│   │   │       ├── openai.ts        #   openai_chat (Chat Completions)
+│   │   │       ├── openaiResponse.ts#   openai_response (Responses API)
+│   │   │       ├── anthropic.ts
+│   │   │       └── google.ts
 │   │   ├── bot/                     # Telegram Bot
 │   │   │   ├── filters.ts
 │   │   │   ├── keyboards.ts
