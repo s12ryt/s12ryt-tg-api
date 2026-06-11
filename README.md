@@ -15,6 +15,7 @@
 - **每模型獨立定價** — 自動從 [models.dev](https://models.dev) 獲取各模型定價（USD / 1M tokens），支援 per-model 計費
 - **Token 用量追蹤** — 自動記錄每個 API Key 的輸入/輸出 Token 數與費用
 - **串流支援 (SSE)** — 支援 Server-Sent Events 即時串流回應
+- **多金鑰負載均衡** — 每個供應商可設定多個 API Key，自動加權隨機選擇 + Circuit Breaker 故障轉移
 - **效能優化** — Provider routing 快取、API Key LRU 快取、用量寫入佇列批量刷入
 - **雙語言實作** — Python (FastAPI + python-telegram-bot) 與 Node.js (Express + grammY)
 
@@ -56,10 +57,10 @@
 
 | 指令 | 說明 |
 |------|------|
-| `/add` | 新增 AI 供應商（多輪對話：名稱 → 端點 → Key → 自動偵測協議 → 選擇類型 → 模型 → 定價） |
+| `/add` | 新增 AI 供應商（多輪對話：名稱 → 端點 → Key（逗號分隔可多個）→ 自動偵測協議 → 選擇類型 → 模型 → 定價） |
 | `/del` | 刪除供應商（支援多選） |
 | `/list` | 列出所有供應商及其用量統計 |
-| `/edit` | 編輯供應商設定（多輪對話） |
+| `/edit` | 編輯供應商設定（多輪對話，API Key 欄位顯示金鑰數量） |
 | `/uu` | 查看所有用戶的 API Key 用量 |
 | `/admin_rm_userkey` | 移除任意用戶的 API Key（支援多選） |
 | `/sub_url` | 設定/覆蓋 API 端點 URL |
@@ -155,6 +156,7 @@ curl http://localhost:8000/v1/chat/completions \
 | **用量寫入佇列** | 每 5 秒或累積 100 筆批量刷入 DB（單一交易），降低 SQLite 寫入瓶頸 |
 | **Model Prices 單一交易** | `batch_upsert_model_prices` 在同一交易中完成所有 upsert |
 | **快取自動失效** | Provider 增刪改時自動重建快取（`process.nextTick` / `asyncio.ensure_future` 批次化） |
+| **Multi-Key 負載均衡** | 加權隨機選擇金鑰 + Circuit Breaker（連續失敗 ≥3 次 → 60 秒冷卻排除） |
 
 ## 支援的供應商
 
@@ -186,6 +188,7 @@ s12ryt-tg-api/
 │   ├── .env.example                 # 環境變數範本
 │   ├── api/                         # API 代理伺服器
 │   │   ├── server.py                # FastAPI 路由定義
+│   │   ├── key_selector.py          # 多金鑰選擇 + Circuit Breaker
 │   │   ├── middleware.py            # 認證中間件
 │   │   ├── usage_tracker.py         # 用量追蹤
 │   │   ├── responses.py             # 回應格式處理
@@ -214,6 +217,7 @@ s12ryt-tg-api/
 │   │   ├── config.ts                # 環境變數配置
 │   │   ├── api/                     # API 代理伺服器
 │   │   │   ├── server.ts
+│   │   │   ├── keySelector.ts       # 多金鑰選擇 + Circuit Breaker
 │   │   │   ├── middleware.ts
 │   │   │   ├── usageTracker.ts
 │   │   │   ├── responses.ts
