@@ -74,26 +74,16 @@ def main():
         user_commands = [
             BotCommand("start", "開始使用 Bot"),
             BotCommand("url", "獲取 API 接口地址"),
-            BotCommand("key", "查看我的 API Key"),
-            BotCommand("key_add", "新增 API Key"),
-            BotCommand("key_del", "刪除 API Key"),
+            BotCommand("key", "API Key 管理（查看/新增/刪除）"),
             BotCommand("usage", "查詢 Token 用量"),
-            BotCommand("start_coding", "開啟/關閉 Coding 模式"),
-            BotCommand("set_coding", "設定 Coding 模式（Fallback 模型鏈）"),
+            BotCommand("coding", "Coding 模式管理（開關/設定）"),
             BotCommand("model_catch", "抓取 API 模型列表"),
         ]
         admin_commands = [
-            BotCommand("add", "新增提供商"),
-            BotCommand("del", "刪除提供商"),
-            BotCommand("list", "列出所有提供商"),
-            BotCommand("edit", "編輯提供商"),
+            BotCommand("provider", "供應商管理（新增/刪除/編輯/列表）"),
             BotCommand("uu", "查詢用戶用量"),
-            BotCommand("admin_rm_userkey", "刪除用戶 Key"),
+            BotCommand("admin_user", "用戶管理（新增/停用/刪除/編輯/移除Key）"),
             BotCommand("sub_url", "修改 API 接口地址"),
-            BotCommand("add_user", "新增用戶"),
-            BotCommand("stop_user", "停用用戶"),
-            BotCommand("del_user", "刪除用戶"),
-            BotCommand("edit_user", "編輯用戶"),
             BotCommand("api_test", "測試 API 協議連通性"),
         ]
         try:

@@ -46,28 +46,18 @@ async function setBotCommands(bot: MyBot): Promise<void> {
   const userCommands: BotCommand[] = [
     { command: "start", description: "開始使用 Bot" },
     { command: "url", description: "獲取 API 接口地址" },
-    { command: "key", description: "查看我的 API Key" },
-    { command: "key_add", description: "新增 API Key" },
-    { command: "key_del", description: "刪除 API Key" },
+    { command: "key", description: "API Key 管理（查看/新增/刪除）" },
     { command: "usage", description: "查詢 Token 用量" },
-    { command: "start_coding", description: "開啟/關閉 Coding 模式" },
-    { command: "set_coding", description: "設定 Coding 模式（Fallback 模型鏈）" },
+    { command: "coding", description: "Coding 模式管理（開關/設定）" },
     { command: "model_catch", description: "抓取 API 模型列表" },
   ];
 
   // 管理員指令
   const adminCommands: BotCommand[] = [
-    { command: "add", description: "新增提供商" },
-    { command: "del", description: "刪除提供商" },
-    { command: "list", description: "列出所有提供商" },
-    { command: "edit", description: "編輯提供商" },
+    { command: "provider", description: "供應商管理（新增/刪除/編輯/列表）" },
     { command: "uu", description: "查詢用戶用量" },
-    { command: "admin_rm_userkey", description: "刪除用戶 Key" },
+    { command: "admin_user", description: "用戶管理（新增/停用/刪除/編輯/移除Key）" },
     { command: "sub_url", description: "修改 API 接口地址" },
-    { command: "add_user", description: "新增用戶" },
-    { command: "stop_user", description: "停用用戶" },
-    { command: "del_user", description: "刪除用戶" },
-    { command: "edit_user", description: "編輯用戶" },
     { command: "api_test", description: "測試 API 協議連通性" },
   ];
 
