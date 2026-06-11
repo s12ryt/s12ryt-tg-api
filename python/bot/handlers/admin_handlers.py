@@ -1,8 +1,7 @@
 """
 Admin handlers - Admin-only commands for the Telegram Bot.
 
-Commands: /add, /del, /list, /edit, /uu, /admin_user,
-          /sub_url, /api_test
+Commands: /provider, /list, /uu, /admin_user, /sub_url, /api_test
 """
 import logging
 from typing import Any
@@ -124,9 +123,8 @@ def _filter_models(models: list[dict], keyword: str) -> list[dict]:
     EDIT_PROVIDER_PRICE_MODELSDEV,
     EDIT_PROVIDER_PRICE_MANUAL,
     EDIT_PROVIDER_PRICE_PER_MODEL,
-    DEL_PROVIDER_SELECT,
     SUB_URL_INPUT,
-) = range(18)
+) = range(17)
 
 # /api_test conversation states (separate from main range)
 API_TEST_URL = 100
@@ -140,6 +138,145 @@ ADMIN_USER_DEL_SELECT = 203
 ADMIN_USER_EDIT_SELECT = 204
 ADMIN_USER_EDIT_INPUT = 205
 ADMIN_USER_RM_KEY_SELECT = 206
+
+# /provider conversation states (separate unified menu)
+PROVIDER_MENU = 300
+PROVIDER_DEL_SELECT = 301
+
+
+_PROVIDER_MENU_TEXT = (
+    "🔧 供應商管理\n\n"
+    "請選擇操作：\n"
+    "1. 新增供應商\n"
+    "2. 刪除供應商\n"
+    "3. 列表\n"
+    "4. 編輯供應商\n\n"
+    "輸入 /cancel 取消"
+)
+
+
+def _provider_end(context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Return PROVIDER_MENU if came from /provider menu, else END."""
+    if context.user_data.pop("from_provider_menu", None):
+        return PROVIDER_MENU
+    return ConversationHandler.END
+
+
+async def _provider_show_list(update: Update) -> None:
+    """Show provider list (reuses list_command logic)."""
+    from db.database import get_model_prices_by_provider
+    providers = await database.get_providers()
+    if not providers:
+        await update.message.reply_text("目前沒有任何提供商。")
+        return
+
+    lines = []
+    for p in providers:
+        usage_records = await database.get_usage_by_provider(p["id"])
+        total_input = sum(r.get("input_tokens", 0) for r in usage_records)
+        total_output = sum(r.get("output_tokens", 0) for r in usage_records)
+        total_input_cost = sum(r.get("input_cost", 0) for r in usage_records)
+        total_output_cost = sum(r.get("output_cost", 0) for r in usage_records)
+        status = "✅" if p.get("enabled") else "❌"
+
+        model_prices = await get_model_prices_by_provider(p["id"])
+        price_lines = "\n".join(
+            f"    {mp['model']}：輸入 ${mp.get('input_price') or '—'} / 輸出 ${mp.get('output_price') or '—'}"
+            for mp in model_prices
+        ) if model_prices else "    （無模型定價）"
+
+        lines.append(
+            f"{status} {p['name']} ({p['api_type']})\n"
+            f"  模型：{p.get('models', '(無)')}\n"
+            f"  模型定價（每 1M tokens）：\n{price_lines}\n"
+            f"  輸入 token: {total_input:,} / 輸出 token: {total_output:,}\n"
+            f"  輸入費用: ${total_input_cost:.6f} / 輸出費用: ${total_output_cost:.6f}"
+        )
+
+    await update.message.reply_text("\n\n".join(lines))
+
+
+# ============================================================
+# /provider - Unified provider management menu
+# ============================================================
+
+async def provider_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Start /provider menu."""
+    await update.message.reply_text(_PROVIDER_MENU_TEXT)
+    return PROVIDER_MENU
+
+
+async def provider_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Route provider menu selection."""
+    text = update.message.text.strip()
+
+    if text == "1":
+        # 新增供應商 — 進入 add 流程
+        context.user_data["from_provider_menu"] = True
+        return await add_start(update, context)
+    elif text == "2":
+        # 刪除供應商 — 列出供應商
+        providers = await database.get_providers()
+        if not providers:
+            await update.message.reply_text("目前沒有任何提供商。\n\n" + _PROVIDER_MENU_TEXT)
+            return PROVIDER_MENU
+
+        context.user_data["providers_map"] = {str(i + 1): p["id"] for i, p in enumerate(providers)}
+        lines = [f"{i + 1}. {p['name']} ({p['api_type']})" for i, p in enumerate(providers)]
+        await update.message.reply_text(
+            "請回覆要刪除的提供商編號（多選用逗號分隔，如: 1,2）：\n\n" + "\n".join(lines)
+        )
+        return PROVIDER_DEL_SELECT
+    elif text == "3":
+        # 列表
+        await _provider_show_list(update)
+        await update.message.reply_text(_PROVIDER_MENU_TEXT)
+        return PROVIDER_MENU
+    elif text == "4":
+        # 編輯供應商 — 進入 edit 流程
+        context.user_data["from_provider_menu"] = True
+        return await edit_start(update, context)
+    else:
+        await update.message.reply_text("❌ 請輸入 1-4 選擇操作。\n\n" + _PROVIDER_MENU_TEXT)
+        return PROVIDER_MENU
+
+
+async def provider_del_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Process deletion from provider menu."""
+    text = update.message.text.strip()
+    providers_map: dict = context.user_data.get("providers_map", {})
+
+    try:
+        indices = [idx.strip() for idx in text.split(",")]
+    except Exception:
+        await update.message.reply_text("❌ 格式錯誤。\n\n" + _PROVIDER_MENU_TEXT)
+        context.user_data.pop("providers_map", None)
+        return PROVIDER_MENU
+
+    deleted = 0
+    for idx in indices:
+        provider_id = providers_map.get(idx)
+        if provider_id:
+            success = await database.delete_provider(provider_id)
+            if success:
+                deleted += 1
+
+    await update.message.reply_text(f"✅ 已刪除 {deleted} 個提供商。\n\n" + _PROVIDER_MENU_TEXT)
+    context.user_data.pop("providers_map", None)
+    return PROVIDER_MENU
+
+
+async def provider_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Cancel provider menu."""
+    await update.message.reply_text("❌ 操作已取消。")
+    context.user_data.pop("from_provider_menu", None)
+    context.user_data.pop("providers_map", None)
+    context.user_data.pop("new_provider", None)
+    context.user_data.pop("model_pricing_entries", None)
+    context.user_data.pop("editing_provider", None)
+    context.user_data.pop("edit_field", None)
+    context.user_data.pop("model_pricing_entries", None)
+    return ConversationHandler.END
 
 
 # ============================================================
@@ -571,51 +708,11 @@ async def _save_provider(
 
     context.user_data.pop("new_provider", None)
     context.user_data.pop("model_pricing_entries", None)
-    return ConversationHandler.END
+    return _provider_end(context)
 
 
-# ============================================================
-# /del - Multi-select delete providers
-# ============================================================
 
-async def del_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Start /del - list providers for multi-select."""
-    providers = await database.get_providers()
-    if not providers:
-        await update.message.reply_text("目前沒有任何提供商。")
-        return ConversationHandler.END
-
-    context.user_data["providers_map"] = {str(i + 1): p["id"] for i, p in enumerate(providers)}
-    lines = [f"{i + 1}. {p['name']} ({p['api_type']})" for i, p in enumerate(providers)]
-
-    await update.message.reply_text(
-        "請回覆要刪除的提供商編號（多選用逗號分隔，如: 1,2）：\n\n" + "\n".join(lines)
-    )
-    return DEL_PROVIDER_SELECT
-
-
-async def del_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Process deletion selection."""
-    text = update.message.text.strip()
-    providers_map: dict = context.user_data.get("providers_map", {})
-
-    try:
-        indices = [idx.strip() for idx in text.split(",")]
-    except Exception:
-        await update.message.reply_text("❌ 格式錯誤。")
-        return ConversationHandler.END
-
-    deleted = 0
-    for idx in indices:
-        provider_id = providers_map.get(idx)
-        if provider_id:
-            success = await database.delete_provider(provider_id)
-            if success:
-                deleted += 1
-
-    await update.message.reply_text(f"✅ 已刪除 {deleted} 個提供商。")
-    context.user_data.pop("providers_map", None)
-    return ConversationHandler.END
+# (del_start/del_select removed — deletion now handled inside provider_menu + provider_del_select)
 
 
 # ============================================================
@@ -666,7 +763,8 @@ async def edit_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     providers = await database.get_providers()
     if not providers:
         await update.message.reply_text("目前沒有任何提供商。")
-        return ConversationHandler.END
+        return _provider_end(context)
+
 
     context.user_data["providers_map"] = {str(i + 1): p for i, p in enumerate(providers)}
     lines = [f"{i + 1}. {p['name']} ({p['api_type']})" for i, p in enumerate(providers)]
@@ -682,7 +780,8 @@ async def edit_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 
     if text not in providers_map:
         await update.message.reply_text("❌ 無效的編號。")
-        return ConversationHandler.END
+        return _provider_end(context)
+
 
     provider = providers_map[text]
     context.user_data["editing_provider"] = provider
@@ -748,7 +847,7 @@ async def edit_field(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             await update.message.reply_text("⚠️ 此提供商尚無模型，請先設定模型列表。")
             context.user_data.pop("editing_provider", None)
             context.user_data.pop("edit_field", None)
-            return ConversationHandler.END
+            return _provider_end(context)
 
         await update.message.reply_text("🔍 正在從 models.dev 獲取每個模型的定價...")
         pricing_map = await fetch_models_pricing(current_models)
@@ -1016,7 +1115,8 @@ async def edit_models_price_confirm(update: Update, context: ContextTypes.DEFAUL
             await update.message.reply_text(f"✅ 已更新模型：{models_value}")
         context.user_data.pop("editing_provider", None)
         context.user_data.pop("edit_field", None)
-        return ConversationHandler.END
+        return _provider_end(context)
+
     elif text == "2":
         # Manual uniform pricing — update models first, then ask for price
         await database.update_provider(provider_id, models=models_value)
@@ -1059,7 +1159,8 @@ async def edit_price_modelsdev(update: Update, context: ContextTypes.DEFAULT_TYP
             await update.message.reply_text("✅ 已從 models.dev 更新所有模型定價。")
         context.user_data.pop("editing_provider", None)
         context.user_data.pop("edit_field", None)
-        return ConversationHandler.END
+        return _provider_end(context)
+
     elif text == "2":
         # Manual uniform pricing for all models
         await update.message.reply_text("請輸入統一定價（格式：輸入價格,輸出價格，每 1M tokens）：")
@@ -1081,7 +1182,8 @@ async def edit_price_modelsdev(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("已跳過，定價保持不變。")
         context.user_data.pop("editing_provider", None)
         context.user_data.pop("edit_field", None)
-        return ConversationHandler.END
+        return _provider_end(context)
+
 
 
 async def edit_price_manual(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1114,7 +1216,9 @@ async def edit_price_manual(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     context.user_data.pop("editing_provider", None)
     context.user_data.pop("edit_field", None)
-    return ConversationHandler.END
+    return _provider_end(context)
+
+
 
 
 async def edit_price_per_model(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1175,7 +1279,9 @@ async def edit_price_per_model(update: Update, context: ContextTypes.DEFAULT_TYP
         context.user_data.pop("per_model_entries", None)
         context.user_data.pop("editing_provider", None)
         context.user_data.pop("edit_field", None)
-        return ConversationHandler.END
+    return _provider_end(context)
+
+
 
 
 async def _do_edit_update(update: Update, context: ContextTypes.DEFAULT_TYPE, value: Any) -> int:
@@ -1196,7 +1302,9 @@ async def _do_edit_update(update: Update, context: ContextTypes.DEFAULT_TYPE, va
 
     context.user_data.pop("editing_provider", None)
     context.user_data.pop("edit_field", None)
-    return ConversationHandler.END
+    return _provider_end(context)
+
+
 
 
 # ============================================================
@@ -1665,53 +1773,38 @@ def register_admin_handlers(app):
     # /uu - simple command
     app.add_handler(CommandHandler("uu", uu_command, filters=filters.User(user_id=Config.ADMIN_ID)))
 
-    # /add - multi-turn conversation
-    add_conv = ConversationHandler(
-        entry_points=[CommandHandler("add", add_start, filters=filters.User(user_id=Config.ADMIN_ID))],
+    # /provider — unified provider management (merges add/del/edit, /list kept standalone)
+    _filt = filters.User(user_id=Config.ADMIN_ID)
+    _txt = filters.TEXT & ~filters.COMMAND
+    provider_conv = ConversationHandler(
+        entry_points=[CommandHandler("provider", provider_start, filters=_filt)],
         states={
-            ADD_PROVIDER_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_name)],
-            ADD_PROVIDER_TYPE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_type)],
-            ADD_PROVIDER_URL: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_url)],
-            ADD_PROVIDER_KEY: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_key)],
-            ADD_PROVIDER_MODELS_SELECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_models_select)],
-            ADD_PROVIDER_MODELS_MANUAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_models_manual)],
-            ADD_PROVIDER_PRICE_CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_price_confirm)],
-            ADD_PROVIDER_PRICE_MANUAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_price_manual)],
-            ADD_PROVIDER_PRICE_PER_MODEL: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_price_per_model)],
+            PROVIDER_MENU: [MessageHandler(_txt, provider_menu)],
+            PROVIDER_DEL_SELECT: [MessageHandler(_txt, provider_del_select)],
+            # add sub-flow
+            ADD_PROVIDER_NAME: [MessageHandler(_txt, add_name)],
+            ADD_PROVIDER_TYPE: [MessageHandler(_txt, add_type)],
+            ADD_PROVIDER_URL: [MessageHandler(_txt, add_url)],
+            ADD_PROVIDER_KEY: [MessageHandler(_txt, add_key)],
+            ADD_PROVIDER_MODELS_SELECT: [MessageHandler(_txt, add_models_select)],
+            ADD_PROVIDER_MODELS_MANUAL: [MessageHandler(_txt, add_models_manual)],
+            ADD_PROVIDER_PRICE_CONFIRM: [MessageHandler(_txt, add_price_confirm)],
+            ADD_PROVIDER_PRICE_MANUAL: [MessageHandler(_txt, add_price_manual)],
+            ADD_PROVIDER_PRICE_PER_MODEL: [MessageHandler(_txt, add_price_per_model)],
+            # edit sub-flow
+            EDIT_PROVIDER_SELECT: [MessageHandler(_txt, edit_select)],
+            EDIT_PROVIDER_FIELD: [MessageHandler(_txt, edit_field)],
+            EDIT_PROVIDER_VALUE: [MessageHandler(_txt, edit_value)],
+            EDIT_PROVIDER_MODELS_SELECT: [MessageHandler(_txt, edit_models_select)],
+            EDIT_PROVIDER_MODELS_MANUAL: [MessageHandler(_txt, edit_models_manual)],
+            EDIT_PROVIDER_MODELS_PRICE_CONFIRM: [MessageHandler(_txt, edit_models_price_confirm)],
+            EDIT_PROVIDER_PRICE_MODELSDEV: [MessageHandler(_txt, edit_price_modelsdev)],
+            EDIT_PROVIDER_PRICE_MANUAL: [MessageHandler(_txt, edit_price_manual)],
+            EDIT_PROVIDER_PRICE_PER_MODEL: [MessageHandler(_txt, edit_price_per_model)],
         },
-        fallbacks=[CommandHandler("cancel", cancel_conversation)],
+        fallbacks=[CommandHandler("cancel", provider_cancel)],
     )
-    app.add_handler(add_conv)
-
-    # /del - multi-select conversation
-    del_conv = ConversationHandler(
-        entry_points=[CommandHandler("del", del_start, filters=filters.User(user_id=Config.ADMIN_ID))],
-        states={
-            DEL_PROVIDER_SELECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, del_select)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel_conversation)],
-    )
-    app.add_handler(del_conv)
-
-    # /edit - multi-turn conversation
-    edit_conv = ConversationHandler(
-        entry_points=[CommandHandler("edit", edit_start, filters=filters.User(user_id=Config.ADMIN_ID))],
-        states={
-            EDIT_PROVIDER_SELECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_select)],
-            EDIT_PROVIDER_FIELD: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_field)],
-            EDIT_PROVIDER_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_value)],
-            EDIT_PROVIDER_MODELS_SELECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_models_select)],
-            EDIT_PROVIDER_MODELS_MANUAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_models_manual)],
-            EDIT_PROVIDER_MODELS_PRICE_CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_models_price_confirm)],
-            EDIT_PROVIDER_PRICE_MODELSDEV: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_price_modelsdev)],
-            EDIT_PROVIDER_PRICE_MANUAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_price_manual)],
-            EDIT_PROVIDER_PRICE_PER_MODEL: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_price_per_model)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel_conversation)],
-    )
-    app.add_handler(edit_conv)
-
-    # /admin_rm_userkey — now part of /admin_user (removed standalone)
+    app.add_handler(provider_conv)
 
     # /sub_url
     sub_url_conv = ConversationHandler(

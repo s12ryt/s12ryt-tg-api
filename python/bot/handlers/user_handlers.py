@@ -1,8 +1,8 @@
 """
 User handlers - Regular user commands for the Telegram Bot.
 
-Commands: /start, /url, /key, /usage, /key-add, /key-del,
-          /start-coding, /set-coding, /model_catch
+Commands: /start, /url, /key (menu: view/add/del), /usage,
+          /coding (menu: toggle/config), /model_catch
 """
 import logging
 
@@ -24,6 +24,40 @@ from bot.handlers.admin_handlers import _safe_reply_models
 logger = logging.getLogger(__name__)
 
 
+# ============================================================
+# Conversation states
+# ============================================================
+
+# /key menu states
+KEY_MENU = 0
+KEY_DEL_SELECT = 1
+
+# /coding menu states
+CODING_MENU = 10
+CODING_SET_FALLBACK = 11
+CODING_SET_MAX_RETRIES = 12
+
+# /model_catch states
+MODEL_CATCH_URL = 20
+MODEL_CATCH_KEY = 21
+
+# Menu text constants
+_KEY_MENU_TEXT = (
+    "🔑 API Key 管理\n\n"
+    "1. 查看 Key\n"
+    "2. 新增 Key\n"
+    "3. 刪除 Key\n\n"
+    "請輸入數字選擇操作，或 /cancel 取消："
+)
+
+_CODING_MENU_TEXT = (
+    "💻 Coding 模式管理\n\n"
+    "1. 開關 Coding 模式\n"
+    "2. 設定 Coding 模式（Fallback 模型鏈）\n\n"
+    "請輸入數字選擇操作，或 /cancel 取消："
+)
+
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /start command."""
     await update.message.reply_text("你好!")
@@ -38,42 +72,131 @@ async def url_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await update.message.reply_text(f"當前 API 接口: {url}")
 
 
-async def key_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /key command.
-    If user has no key, create one. Otherwise return existing keys.
-    """
+async def _ensure_user(update: Update) -> dict | None:
+    """Ensure user exists in DB, return user dict or None."""
     tg_user_id = update.effective_user.id
-
-    # Ensure user exists in database
     user = await database.get_user_by_tg_id(tg_user_id)
     if not user:
-        # Auto-create user on first /key
         username = update.effective_user.username or ""
         await database.add_user(tg_user_id, username)
         user = await database.get_user_by_tg_id(tg_user_id)
+    return user
 
-    # Get existing keys
+
+async def key_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Entry point for /key menu."""
+    await _ensure_user(update)
+    await update.message.reply_text(_KEY_MENU_TEXT)
+    return KEY_MENU
+
+
+async def key_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Route /key menu selection."""
+    text = update.message.text.strip()
+    if text == "1":
+        return await _key_view(update, context)
+    elif text == "2":
+        return await _key_add(update, context)
+    elif text == "3":
+        return await _key_del_list(update, context)
+    else:
+        await update.message.reply_text("❌ 無效選項，請輸入 1-3：")
+        return KEY_MENU
+
+
+async def _key_view(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Show existing keys, then return to menu."""
+    tg_user_id = update.effective_user.id
     keys = await database.get_keys_by_user(tg_user_id)
+    active_keys = [k for k in keys if k.get("is_active")]
 
-    if not keys:
-        # First time - create a new key
+    if not active_keys:
+        # Auto-create first key
         result = await database.add_api_key(tg_user_id)
         if result:
-            await update.message.reply_text(f"您的 key: {result['key']}")
+            await update.message.reply_text(f"✅ 已自動建立 key：`{result['key']}`\n\n" + _KEY_MENU_TEXT, parse_mode="Markdown")
         else:
-            await update.message.reply_text("❌ 創建 key 失敗，請稍後再試。")
+            await update.message.reply_text("❌ 創建 key 失敗。\n\n" + _KEY_MENU_TEXT)
     else:
-        # Show existing keys
-        key_list = "\n".join(f"  `{k['key']}`" for k in keys if k.get("is_active"))
-        if not key_list:
-            # All keys inactive, create new one
-            result = await database.add_api_key(tg_user_id)
-            if result:
-                await update.message.reply_text(f"您的 key: {result['key']}")
-            else:
-                await update.message.reply_text("❌ 創建 key 失敗，請稍後再試。")
-        else:
-            await update.message.reply_text(f"您的 key:\n{key_list}", parse_mode="Markdown")
+        key_list = "\n".join(f"  `{k['key']}`" for k in active_keys)
+        await update.message.reply_text(f"您的 key：\n{key_list}\n\n" + _KEY_MENU_TEXT, parse_mode="Markdown")
+    return KEY_MENU
+
+
+async def _key_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Add a new key, then return to menu."""
+    tg_user_id = update.effective_user.id
+    await _ensure_user(update)
+    result = await database.add_api_key(tg_user_id)
+    if result:
+        await update.message.reply_text(f"✅ 新增 key：`{result['key']}`\n\n" + _KEY_MENU_TEXT, parse_mode="Markdown")
+    else:
+        await update.message.reply_text("❌ 創建 key 失敗。\n\n" + _KEY_MENU_TEXT)
+    return KEY_MENU
+
+
+async def _key_del_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """List keys for deletion multi-select."""
+    tg_user_id = update.effective_user.id
+    keys = await database.get_keys_by_user(tg_user_id)
+    active_keys = [k for k in keys if k.get("is_active")]
+
+    if not active_keys:
+        await update.message.reply_text("您沒有可刪除的 API key。\n\n" + _KEY_MENU_TEXT)
+        return KEY_MENU
+
+    context.user_data["key_del_map"] = {str(i + 1): k["id"] for i, k in enumerate(active_keys)}
+    lines = [f"{i}. `{k['key']}`" for i, k in enumerate(active_keys, 1)]
+    await update.message.reply_text(
+        "請回覆要刪除的 key 編號（多選用逗號分隔，如: 1,2）：\n\n" + "\n".join(lines) + "\n\n或輸入 0 返回選單：",
+        parse_mode="Markdown",
+    )
+    return KEY_DEL_SELECT
+
+
+async def key_del_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle key deletion selection."""
+    text = update.message.text.strip()
+    keys_map: dict = context.user_data.get("key_del_map", {})
+
+    if text == "0":
+        context.user_data.pop("key_del_map", None)
+        await update.message.reply_text(_KEY_MENU_TEXT)
+        return KEY_MENU
+
+    try:
+        indices = [idx.strip() for idx in text.split(",")]
+    except Exception:
+        await update.message.reply_text("❌ 格式錯誤，請使用數字編號（如: 1,2）：")
+        return KEY_DEL_SELECT
+
+    selected = set()
+    for idx in indices:
+        if idx in keys_map:
+            selected.add(idx)
+
+    if not selected:
+        await update.message.reply_text("❌ 未選中任何有效編號，請重新輸入：")
+        return KEY_DEL_SELECT
+
+    deleted = 0
+    for idx in selected:
+        key_id = keys_map.get(idx)
+        if key_id:
+            success = await database.delete_api_key(key_id)
+            if success:
+                deleted += 1
+
+    context.user_data.pop("key_del_map", None)
+    await update.message.reply_text(f"✅ 已刪除 {deleted} 個 API key。\n\n" + _KEY_MENU_TEXT)
+    return KEY_MENU
+
+
+async def key_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Cancel /key conversation."""
+    context.user_data.pop("key_del_map", None)
+    await update.message.reply_text("❌ 已取消。")
+    return ConversationHandler.END
 
 
 async def usage_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -111,104 +234,43 @@ async def usage_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text("\n\n".join(lines), parse_mode="Markdown")
 
 
-async def key_add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /key-add command - Add a new API key."""
-    tg_user_id = update.effective_user.id
-
-    # Ensure user exists
-    user = await database.get_user_by_tg_id(tg_user_id)
-    if not user:
-        username = update.effective_user.username or ""
-        await database.add_user(tg_user_id, username)
-
-    result = await database.add_api_key(tg_user_id)
-    if result:
-        await update.message.reply_text(f"您的 key: {result['key']}")
-    else:
-        await update.message.reply_text("❌ 創建 key 失敗，請稍後再試。")
-
-
-async def key_del_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /key-del command - List keys for multi-select deletion."""
-    tg_user_id = update.effective_user.id
-    keys = await database.get_keys_by_user(tg_user_id)
-
-    active_keys = [k for k in keys if k.get("is_active")]
-    if not active_keys:
-        await update.message.reply_text("您沒有可刪除的 API key。")
-        return
-
-    # Store keys in user_data for later callback processing
-    context.user_data["keys_to_delete"] = {str(i + 1): k["id"] for i, k in enumerate(active_keys)}
-    context.user_data["selected_for_deletion"] = set()
-
-    # Build numbered list
-    lines = []
-    for i, k in enumerate(active_keys, 1):
-        lines.append(f"{i}. `{k['key']}`")
-
-    await update.message.reply_text(
-        "請回覆要刪除的 key 編號（多選用逗號分隔，如: 1,2）：\n\n" + "\n".join(lines),
-        parse_mode="Markdown",
-    )
-
-    # Set state for text reply handling
-    return "WAITING_KEY_DEL"
-
-
-async def key_del_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle text reply for /key-del multi-select."""
-    text = update.message.text.strip()
-    keys_map: dict = context.user_data.get("keys_to_delete", {})
-    selected: set = context.user_data.get("selected_for_deletion", set())
-
-    # Parse selection
-    try:
-        indices = [idx.strip() for idx in text.split(",")]
-        for idx in indices:
-            if idx in keys_map:
-                selected.add(idx)
-    except Exception:
-        await update.message.reply_text("❌ 格式錯誤，請使用數字編號（如: 1,2）。")
-        return "WAITING_KEY_DEL"
-
-    # Delete selected keys
-    deleted = 0
-    for idx in selected:
-        key_id = keys_map.get(idx)
-        if key_id:
-            success = await database.delete_api_key(key_id)
-            if success:
-                deleted += 1
-
-    await update.message.reply_text(f"✅ 已刪除 {deleted} 個 API key。")
-
-    # Clean up
-    context.user_data.pop("keys_to_delete", None)
-    context.user_data.pop("selected_for_deletion", None)
-    return -1  # End conversation
-
-
 # ============================================================
-# /start-coding - Toggle coding mode on/off
+# /coding - Unified coding mode menu (toggle + config)
 # ============================================================
 
-async def start_coding_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /start-coding - Toggle coding mode for the current user."""
-    from db.database import reset_coding_session_stats
+async def coding_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Entry point for /coding menu."""
     tg_user_id = update.effective_user.id
-
-    # Ensure user exists
     user = await database.get_user_by_tg_id(tg_user_id)
     if not user:
         await update.message.reply_text("❌ 您尚未註冊，請先使用 /key 創建 API key。")
-        return
+        return ConversationHandler.END
+    await update.message.reply_text(_CODING_MENU_TEXT)
+    return CODING_MENU
+
+
+async def coding_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Route /coding menu selection."""
+    text = update.message.text.strip()
+    if text == "1":
+        return await _coding_toggle(update, context)
+    elif text == "2":
+        return await _coding_config_start(update, context)
+    else:
+        await update.message.reply_text("❌ 無效選項，請輸入 1 或 2：")
+        return CODING_MENU
+
+
+async def _coding_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Toggle coding mode on/off, then return to menu."""
+    from db.database import reset_coding_session_stats
+    tg_user_id = update.effective_user.id
+    user = await database.get_user_by_tg_id(tg_user_id)
 
     config = await get_coding_config_by_tg_id(tg_user_id)
 
     if config and config.get("is_active"):
-        # Currently active → deactivate + show session summary
-        # Capture stats before deactivating
+        # Deactivate + show session summary
         s_in = config.get("session_input_tokens", 0) or 0
         s_out = config.get("session_output_tokens", 0) or 0
         s_in_cost = config.get("session_input_cost", 0.0) or 0.0
@@ -220,7 +282,6 @@ async def start_coding_command(update: Update, context: ContextTypes.DEFAULT_TYP
         if s_reqs > 0:
             import json
             total_cost = s_in_cost + s_out_cost
-            # Build per-model breakdown
             model_counts_raw = config.get("session_model_counts", "{}") or "{}"
             try:
                 model_counts = json.loads(model_counts_raw) if isinstance(model_counts_raw, str) else {}
@@ -241,11 +302,12 @@ async def start_coding_command(update: Update, context: ContextTypes.DEFAULT_TYP
                 f"   輸出費用：${s_out_cost:.6f}\n"
                 f"   總費用：${total_cost:.6f}"
                 + model_breakdown
+                + "\n\n" + _CODING_MENU_TEXT
             )
         else:
-            await update.message.reply_text("🔴 Coding 模式已關閉。\n\n📊 本次 Session 無請求記錄。")
+            await update.message.reply_text("🔴 Coding 模式已關閉。\n\n📊 本次 Session 無請求記錄。\n\n" + _CODING_MENU_TEXT)
     else:
-        # Currently inactive → activate + reset session stats
+        # Activate + reset session stats
         if config and config.get("fallback_models"):
             await set_coding_config(user["id"], is_active=1)
             await reset_coding_session_stats(user["id"])
@@ -255,33 +317,21 @@ async def start_coding_command(update: Update, context: ContextTypes.DEFAULT_TYP
                 f"📋 當前 Fallback 模型鏈：\n"
                 + "\n".join(f"   {i + 1}. {m}" for i, m in enumerate(fallback_list))
                 + f"\n\n最大重試次數：{config.get('max_retries', 3)}"
+                + "\n\n" + _CODING_MENU_TEXT
             )
         else:
-            # No fallback configured yet
             await set_coding_config(user["id"], is_active=1)
             await update.message.reply_text(
                 "🟢 Coding 模式已開啟，但尚未設定 Fallback 模型。\n"
-                "請使用 /set_coding 設定 Fallback 模型鏈。"
+                "請選擇 2 設定 Fallback 模型鏈。\n\n" + _CODING_MENU_TEXT
             )
+    return CODING_MENU
 
 
-# ============================================================
-# /set-coding - Multi-turn conversation to configure coding mode
-# ============================================================
-
-SET_CODING_FALLBACK = 0
-SET_CODING_MAX_RETRIES = 1
-
-
-async def set_coding_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Start /set-coding conversation."""
+async def _coding_config_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Start coding config — show current config or available models."""
     tg_user_id = update.effective_user.id
-    user = await database.get_user_by_tg_id(tg_user_id)
-    if not user:
-        await update.message.reply_text("❌ 您尚未註冊，請先使用 /key 創建 API key。")
-        return ConversationHandler.END
 
-    # Show current config
     config = await get_coding_config_by_tg_id(tg_user_id)
     if config and config.get("fallback_models"):
         current = config["fallback_models"]
@@ -295,14 +345,11 @@ async def set_coding_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             "或輸入 skip 保持不變："
         )
     else:
-        # Show available models
         from db.database import get_provider_cache
         cache = get_provider_cache()
         available = sorted(cache.keys())
-
         model_list = "\n".join(f"   {m}" for m in available[:30])
         suffix = f"\n   ...還有 {len(available) - 30} 個" if len(available) > 30 else ""
-
         await update.message.reply_text(
             "🔧 設定 Coding 模式 — Fallback 模型鏈\n\n"
             "當主模型報錯時，會按順序嘗試以下模型：\n\n"
@@ -310,21 +357,17 @@ async def set_coding_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             "請輸入 Fallback 模型鏈（用逗號分隔，按優先順序排列）：\n"
             "例如：claude-4-sonnet,gpt-4o,deepseek-v3"
         )
+    return CODING_SET_FALLBACK
 
-    return SET_CODING_FALLBACK
 
-
-async def set_coding_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def coding_set_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Receive fallback model chain."""
     text = update.message.text.strip().lower()
-    tg_user_id = update.effective_user.id
-    user = await database.get_user_by_tg_id(tg_user_id)
 
     if text == "skip":
         await update.message.reply_text("請輸入最大重試次數（1-10），或輸入 skip 保持預設（3）：")
-        return SET_CODING_MAX_RETRIES
+        return CODING_SET_MAX_RETRIES
 
-    # Validate models exist
     from db.database import get_provider_cache
     cache = get_provider_cache()
     models = [m.strip() for m in text.split(",") if m.strip()]
@@ -335,7 +378,7 @@ async def set_coding_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE
             f"❌ 以下模型不存在：{', '.join(invalid)}\n\n"
             "請重新輸入，或輸入 skip 保持不變："
         )
-        return SET_CODING_FALLBACK
+        return CODING_SET_FALLBACK
 
     context.user_data["coding_fallback_models"] = ",".join(models)
 
@@ -344,11 +387,11 @@ async def set_coding_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE
         + "\n".join(f"   {i + 1}. {m}" for i, m in enumerate(models))
         + "\n\n請輸入最大重試次數（1-10），或輸入 skip 保持預設（3）："
     )
-    return SET_CODING_MAX_RETRIES
+    return CODING_SET_MAX_RETRIES
 
 
-async def set_coding_max_retries(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Receive max retries and save config."""
+async def coding_set_max_retries(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Receive max retries and save config, then return to menu."""
     text = update.message.text.strip().lower()
     tg_user_id = update.effective_user.id
     user = await database.get_user_by_tg_id(tg_user_id)
@@ -360,21 +403,20 @@ async def set_coding_max_retries(update: Update, context: ContextTypes.DEFAULT_T
             max_retries = int(text)
             if not 1 <= max_retries <= 10:
                 await update.message.reply_text("❌ 請輸入 1-10 之間的數字：")
-                return SET_CODING_MAX_RETRIES
+                return CODING_SET_MAX_RETRIES
         except ValueError:
             await update.message.reply_text("❌ 請輸入數字（1-10）：")
-            return SET_CODING_MAX_RETRIES
+            return CODING_SET_MAX_RETRIES
 
     fallback_models = context.user_data.pop("coding_fallback_models", None)
 
-    # Get current config to preserve fallback_models if skipped
     current_config = await get_coding_config_by_tg_id(tg_user_id)
     if fallback_models is None:
         fallback_models = current_config.get("fallback_models", "") if current_config else ""
 
     await set_coding_config(
         user["id"],
-        is_active=1,  # Auto-enable when configured
+        is_active=1,
         fallback_models=fallback_models,
         max_retries=max_retries,
     )
@@ -386,24 +428,21 @@ async def set_coding_max_retries(update: Update, context: ContextTypes.DEFAULT_T
         + "\n".join(f"   {i + 1}. {m}" for i, m in enumerate(fallback_list))
         + f"\n\n最大重試次數：{max_retries}\n"
         "狀態：🟢 已開啟\n\n"
-        "使用 /start-coding 可以開關 Coding 模式。"
+        + _CODING_MENU_TEXT
     )
-    return ConversationHandler.END
+    return CODING_MENU
 
 
-async def set_coding_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Cancel /set-coding conversation."""
+async def coding_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Cancel /coding conversation."""
     context.user_data.pop("coding_fallback_models", None)
-    await update.message.reply_text("❌ 設定已取消。")
+    await update.message.reply_text("❌ 已取消。")
     return ConversationHandler.END
 
 
 # ============================================================
 # /model_catch - Fetch model list from an external API URL
 # ============================================================
-
-MODEL_CATCH_URL = 0
-MODEL_CATCH_KEY = 1
 
 
 async def model_catch_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -485,38 +524,39 @@ def register_user_handlers(app):
     from telegram.ext import CommandHandler, MessageHandler, filters, ConversationHandler
     from bot.filters import trusted_user_filter
 
+    _filt = filters.Async(trusted_user_filter.filter_async)
+
     # Simple commands
     app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(CommandHandler("url", url_command, filters=filters.Async(trusted_user_filter.filter_async)))
-    app.add_handler(CommandHandler("key", key_command, filters=filters.Async(trusted_user_filter.filter_async)))
-    app.add_handler(CommandHandler("usage", usage_command, filters=filters.Async(trusted_user_filter.filter_async)))
-    app.add_handler(CommandHandler("key_add", key_add_command, filters=filters.Async(trusted_user_filter.filter_async)))
-    app.add_handler(CommandHandler("start_coding", start_coding_command, filters=filters.Async(trusted_user_filter.filter_async)))
+    app.add_handler(CommandHandler("url", url_command, filters=_filt))
+    app.add_handler(CommandHandler("usage", usage_command, filters=_filt))
 
-    # /key-del needs conversation
-    key_del_conv = ConversationHandler(
-        entry_points=[CommandHandler("key_del", key_del_command, filters=filters.Async(trusted_user_filter.filter_async))],
+    # /key — unified key management menu (view / add / del)
+    key_conv = ConversationHandler(
+        entry_points=[CommandHandler("key", key_start, filters=_filt)],
         states={
-            "WAITING_KEY_DEL": [MessageHandler(filters.TEXT & ~filters.COMMAND, key_del_text_handler)],
+            KEY_MENU: [MessageHandler(filters.TEXT & ~filters.COMMAND, key_menu)],
+            KEY_DEL_SELECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, key_del_select)],
         },
-        fallbacks=[CommandHandler("cancel", lambda u, c: -1)],
+        fallbacks=[CommandHandler("cancel", key_cancel)],
     )
-    app.add_handler(key_del_conv)
+    app.add_handler(key_conv)
 
-    # /set-coding needs conversation
-    set_coding_conv = ConversationHandler(
-        entry_points=[CommandHandler("set_coding", set_coding_start, filters=filters.Async(trusted_user_filter.filter_async))],
+    # /coding — unified coding mode menu (toggle / config)
+    coding_conv = ConversationHandler(
+        entry_points=[CommandHandler("coding", coding_start, filters=_filt)],
         states={
-            SET_CODING_FALLBACK: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_coding_fallback)],
-            SET_CODING_MAX_RETRIES: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_coding_max_retries)],
+            CODING_MENU: [MessageHandler(filters.TEXT & ~filters.COMMAND, coding_menu)],
+            CODING_SET_FALLBACK: [MessageHandler(filters.TEXT & ~filters.COMMAND, coding_set_fallback)],
+            CODING_SET_MAX_RETRIES: [MessageHandler(filters.TEXT & ~filters.COMMAND, coding_set_max_retries)],
         },
-        fallbacks=[CommandHandler("cancel", set_coding_cancel)],
+        fallbacks=[CommandHandler("cancel", coding_cancel)],
     )
-    app.add_handler(set_coding_conv)
+    app.add_handler(coding_conv)
 
     # /model_catch needs conversation (URL → optional key)
     model_catch_conv = ConversationHandler(
-        entry_points=[CommandHandler("model_catch", model_catch_start, filters=filters.Async(trusted_user_filter.filter_async))],
+        entry_points=[CommandHandler("model_catch", model_catch_start, filters=_filt)],
         states={
             MODEL_CATCH_URL: [MessageHandler(filters.TEXT & ~filters.COMMAND, model_catch_url)],
             MODEL_CATCH_KEY: [MessageHandler(filters.TEXT & ~filters.COMMAND, model_catch_key)],

@@ -131,10 +131,66 @@ function filterModels(models: FetchedModel[], keyword: string): FetchedModel[] {
 }
 
 // ========================
-// /add — Add a new provider (6-step conversation)
+// Provider menu text
 // ========================
 
-async function addConversation(
+const PROVIDER_MENU_TEXT =
+  "📦 Provider 管理\n\n" +
+  "1. 新增 Provider\n" +
+  "2. 刪除 Provider\n" +
+  "3. 編輯 Provider\n" +
+  "4. 列出所有 Provider\n\n" +
+  "請輸入數字選擇操作，或 /cancel 取消：";
+
+// ========================
+// /provider — 統一 Provider 管理對話
+// ========================
+
+async function providerConversation(
+  conversation: MyConversation,
+  ctx: MyContext
+): Promise<void> {
+  while (true) {
+    await ctx.reply(PROVIDER_MENU_TEXT);
+    ctx = await conversation.wait();
+    const choice = ctx.msg?.text?.trim() ?? "";
+
+    if (choice === "/cancel") return;
+
+    if (choice === "1") {
+      // ── 新增 Provider ──
+      await doAddProvider(conversation, ctx);
+      continue;
+    }
+
+    if (choice === "2") {
+      // ── 刪除 Provider ──
+      await doDelProvider(conversation, ctx);
+      continue;
+    }
+
+    if (choice === "3") {
+      // ── 編輯 Provider ──
+      await doEditProvider(conversation, ctx);
+      continue;
+    }
+
+    if (choice === "4") {
+      // ── 列出 Provider ──
+      await doListProviders(ctx);
+      continue;
+    }
+
+    // 無效選項
+    await ctx.reply("❌ 請輸入 1-4 選擇操作。\n\n" + PROVIDER_MENU_TEXT);
+  }
+}
+
+// ========================
+// Provider 子功能：新增
+// ========================
+
+async function doAddProvider(
   conversation: MyConversation,
   ctx: MyContext
 ): Promise<void> {
@@ -143,7 +199,7 @@ async function addConversation(
   ctx = await conversation.wait();
   const name = ctx.msg?.text?.trim();
   if (!name) {
-    await ctx.reply("❌ 名稱不能為空，已取消。");
+    await ctx.reply("❌ 名稱不能為空，已取消新增。");
     return;
   }
 
@@ -152,7 +208,7 @@ async function addConversation(
   ctx = await conversation.wait();
   const baseUrl = ctx.msg?.text?.trim();
   if (!baseUrl) {
-    await ctx.reply("❌ Base URL 不能為空，已取消。");
+    await ctx.reply("❌ Base URL 不能為空，已取消新增。");
     return;
   }
 
@@ -161,7 +217,7 @@ async function addConversation(
   ctx = await conversation.wait();
   const apiKeyRaw = ctx.msg?.text?.trim();
   if (!apiKeyRaw) {
-    await ctx.reply("❌ API Key 不能為空，已取消。");
+    await ctx.reply("❌ API Key 不能為空，已取消新增。");
     return;
   }
   // Parse comma-separated keys → JSON array
@@ -221,7 +277,7 @@ async function addConversation(
   const typeInput = ctx.msg?.text?.trim();
   const apiType = typeMap[typeInput ?? ""] ?? typeInput;
   if (!VALID_TYPES.includes(apiType)) {
-    await ctx.reply("❌ 無效的 API 類型，已取消。");
+    await ctx.reply("❌ 無效的 API 類型，已取消新增。");
     return;
   }
 
@@ -467,10 +523,10 @@ async function addConversation(
 }
 
 // ========================
-// /del — Delete providers (multi-select)
+// Provider 子功能：刪除
 // ========================
 
-async function delConversation(
+async function doDelProvider(
   conversation: MyConversation,
   ctx: MyContext
 ): Promise<void> {
@@ -494,7 +550,7 @@ async function delConversation(
     .filter((id): id is number => id !== undefined);
 
   if (selectedIds.length === 0) {
-    await ctx.reply("❌ 沒有有效的選擇，已取消。");
+    await ctx.reply("❌ 沒有有效的選擇，已取消刪除。");
     return;
   }
 
@@ -507,10 +563,10 @@ async function delConversation(
 }
 
 // ========================
-// /list — List all providers with usage stats
+// Provider 子功能：列出
 // ========================
 
-async function listCommand(ctx: MyContext): Promise<void> {
+async function doListProviders(ctx: MyContext): Promise<void> {
   const providers = getProviders();
   if (providers.length === 0) {
     await ctx.reply("📭 目前沒有任何 Provider。");
@@ -550,10 +606,10 @@ async function listCommand(ctx: MyContext): Promise<void> {
 }
 
 // ========================
-// /edit — Edit a provider (3-step conversation)
+// Provider 子功能：編輯
 // ========================
 
-async function editConversation(
+async function doEditProvider(
   conversation: MyConversation,
   ctx: MyContext
 ): Promise<void> {
@@ -575,7 +631,7 @@ async function editConversation(
   const idx = parseInt(ctx.msg?.text?.trim() ?? "", 10);
   const provider = providers[idx - 1];
   if (!provider) {
-    await ctx.reply("❌ 無效的編號，已取消。");
+    await ctx.reply("❌ 無效的編號，已取消編輯。");
     return;
   }
 
@@ -601,7 +657,7 @@ async function editConversation(
   const fieldIdx = parseInt(ctx.msg?.text?.trim() ?? "", 10);
   const field = editableFields[fieldIdx - 1];
   if (!field) {
-    await ctx.reply("❌ 無效的編號，已取消。");
+    await ctx.reply("❌ 無效的編號，已取消編輯。");
     return;
   }
 
@@ -668,7 +724,6 @@ async function editConversation(
     }
 
     // ── Auto-fetch pricing from models.dev after model selection ──
-    // Same format as edit_field → pricing: 4 options with DB comparison
     const newModelList = String(processedValue).split(",").map((m) => m.trim()).filter(Boolean);
     if (newModelList.length > 0) {
       await ctx.reply("🔍 正在從 models.dev 獲取每個新模型的定價...");
@@ -965,7 +1020,7 @@ async function editConversation(
     ctx = await conversation.wait();
     const newValue = ctx.msg?.text?.trim();
     if (!newValue) {
-      await ctx.reply("❌ 值不能為空，已取消。");
+      await ctx.reply("❌ 值不能為空，已取消編輯。");
       return;
     }
 
@@ -1363,9 +1418,7 @@ async function apiTestConversation(
 
 export function registerAdminHandlers(bot: Bot<MyContext>): void {
   // Register all admin conversations
-  bot.use(createConversation(addConversation, "addConversation"));
-  bot.use(createConversation(delConversation, "delConversation"));
-  bot.use(createConversation(editConversation, "editConversation"));
+  bot.use(createConversation(providerConversation, "providerConversation"));
   bot.use(createConversation(subUrlConversation, "subUrlConversation"));
   bot.use(createConversation(adminUserConversation, "adminUserConversation"));
   bot.use(createConversation(apiTestConversation, "apiTestConversation"));
@@ -1381,19 +1434,29 @@ export function registerAdminHandlers(bot: Bot<MyContext>): void {
     await handler(ctx);
   };
 
-  // Conversation commands
+  // Provider management — unified conversation
+  bot.command("provider", adminOnly(async (ctx) => {
+    await ctx.conversation.enter("providerConversation");
+  }));
+
+  // Legacy aliases: /add, /del, /edit, /list → all enter provider conversation
   bot.command("add", adminOnly(async (ctx) => {
-    await ctx.conversation.enter("addConversation");
+    await ctx.conversation.enter("providerConversation");
   }));
 
   bot.command("del", adminOnly(async (ctx) => {
-    await ctx.conversation.enter("delConversation");
+    await ctx.conversation.enter("providerConversation");
   }));
 
   bot.command("edit", adminOnly(async (ctx) => {
-    await ctx.conversation.enter("editConversation");
+    await ctx.conversation.enter("providerConversation");
   }));
 
+  bot.command("list", adminOnly(async (ctx) => {
+    await ctx.conversation.enter("providerConversation");
+  }));
+
+  // Other conversations
   bot.command("sub_url", adminOnly(async (ctx) => {
     await ctx.conversation.enter("subUrlConversation");
   }));
@@ -1407,6 +1470,5 @@ export function registerAdminHandlers(bot: Bot<MyContext>): void {
   }));
 
   // Single-message commands
-  bot.command("list", adminOnly(listCommand));
   bot.command("uu", adminOnly(uuCommand));
 }
