@@ -9,6 +9,8 @@ import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import http from "http";
 import { authMiddleware } from "./middleware.js";
+import { rateLimitMiddleware } from "./rateLimiter.js";
+import { quotaCheckMiddleware } from "./quotaChecker.js";
 import * as openaiProvider from "./providers/openai.js";
 import * as openaiResponseProvider from "./providers/openaiResponse.js";
 import * as anthropicProvider from "./providers/anthropic.js";
@@ -37,6 +39,8 @@ const app = express();
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: "10mb" }));
 app.use(authMiddleware);
+app.use(rateLimitMiddleware);
+app.use(quotaCheckMiddleware);
 
 // ---------------------------------------------------------------------------
 // Helper: write SSE chunk and immediately flush the socket
@@ -508,7 +512,7 @@ app.post(
               const auth = req.auth;
               if (auth) {
                 await recordUsage({
-                  apiKeyId: auth.apiKeyId,
+                  apiKeyId: auth.apiKeyId, userId: auth.userId,
                   providerId: String(providerId),
                   inputTokens: streamUsage.input_tokens,
                   outputTokens: streamUsage.output_tokens,
@@ -544,7 +548,7 @@ app.post(
           const auth = req.auth;
           if (auth) {
             await recordUsage({
-              apiKeyId: auth.apiKeyId,
+              apiKeyId: auth.apiKeyId, userId: auth.userId,
               providerId: String(providerId),
               inputTokens: usage.input_tokens,
               outputTokens: usage.output_tokens,
@@ -648,7 +652,7 @@ app.post(
                     const auth = req.auth;
                     if (auth) {
                       await recordUsage({
-                        apiKeyId: auth.apiKeyId,
+                        apiKeyId: auth.apiKeyId, userId: auth.userId,
                         providerId: String(_resolved.providerId),
                         inputTokens: streamUsage.input_tokens,
                         outputTokens: streamUsage.output_tokens,
@@ -679,7 +683,7 @@ app.post(
                   const auth = req.auth;
                   if (auth) {
                     await recordUsage({
-                      apiKeyId: auth.apiKeyId,
+                      apiKeyId: auth.apiKeyId, userId: auth.userId,
                       providerId: String(_resolved.providerId),
                       inputTokens: _inT,
                       outputTokens: _outT,
@@ -807,7 +811,7 @@ app.post(
               const auth = req.auth;
               if (auth) {
                 await recordUsage({
-                  apiKeyId: auth.apiKeyId,
+                  apiKeyId: auth.apiKeyId, userId: auth.userId,
                   providerId: String(providerId),
                   inputTokens: streamUsage.input_tokens,
                   outputTokens: streamUsage.output_tokens,
@@ -850,7 +854,7 @@ app.post(
           const auth = req.auth;
           if (auth) {
             await recordUsage({
-              apiKeyId: auth.apiKeyId,
+              apiKeyId: auth.apiKeyId, userId: auth.userId,
               providerId: String(providerId),
               inputTokens: usage.input_tokens,
               outputTokens: usage.output_tokens,
@@ -981,7 +985,7 @@ app.post(
               const auth = req.auth;
               if (auth) {
                 await recordUsage({
-                  apiKeyId: auth.apiKeyId,
+                  apiKeyId: auth.apiKeyId, userId: auth.userId,
                   providerId: String(providerId),
                   inputTokens: streamUsage.input_tokens,
                   outputTokens: streamUsage.output_tokens,
@@ -1019,7 +1023,7 @@ app.post(
           const auth = req.auth;
           if (auth) {
             await recordUsage({
-              apiKeyId: auth.apiKeyId,
+              apiKeyId: auth.apiKeyId, userId: auth.userId,
               providerId: String(providerId),
               inputTokens: usage.input_tokens,
               outputTokens: usage.output_tokens,

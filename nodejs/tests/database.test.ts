@@ -46,6 +46,25 @@ import {
   // Settings CRUD
   getSetting,
   setSetting,
+  // Permission system — User Groups
+  getUserGroups,
+  getUserGroupById,
+  getUserGroupByName,
+  getDefaultUserGroup,
+  addUserGroup,
+  updateUserGroup,
+  deleteUserGroup,
+  // Permission system — User & API Key limits
+  getUserWithLimits,
+  setUserGroup,
+  setUserOverrides,
+  getApiKeyWithLimits,
+  setApiKeyOverrides,
+  // Permission system — Effective limits & quotas
+  getEffectiveLimits,
+  getDailyUsage,
+  getMonthlyUsage,
+  isExpired,
   // Types
   type Provider,
   type User,
@@ -648,5 +667,283 @@ describe("Database lifecycle", () => {
     closeDb();
 
     cleanupTempDir();
+  });
+});
+
+// ===========================================================================
+// Permission System — User Groups CRUD
+// ===========================================================================
+describe("Permission System — User Groups", () => {
+  beforeEach(async () => {
+    await initDbAsync(makeTempDbPath());
+  });
+
+  afterEach(() => {
+    closeDb();
+    cleanupTempDir();
+  });
+
+  it("should seed a default user group on init", () => {
+    const groups = getUserGroups();
+    expect(groups.length).toBeGreaterThanOrEqual(1);
+
+    const defaultGroup = getDefaultUserGroup();
+    expect(defaultGroup).toBeDefined();
+    expect(defaultGroup!.name).toBe("default");
+    expect(defaultGroup!.is_default).toBe(1);
+    expect(defaultGroup!.rpm_limit).toBe(0);
+  });
+
+  it("should add a user group and retrieve it", () => {
+    addUserGroup({ name: "vip", display_name: "VIP Users", rpm_limit: 100, tpm_limit: 50000 });
+    const group = getUserGroupByName("vip");
+    expect(group).toBeDefined();
+    expect(group!.display_name).toBe("VIP Users");
+    expect(group!.rpm_limit).toBe(100);
+    expect(group!.tpm_limit).toBe(50000);
+    expect(group!.is_default).toBe(0);
+  });
+
+  it("should get user group by id", () => {
+    addUserGroup({ name: "premium", rpm_limit: 200 });
+    const group = getUserGroupByName("premium");
+    const byId = getUserGroupById(group!.id);
+    expect(byId).toBeDefined();
+    expect(byId!.name).toBe("premium");
+  });
+
+  it("should update a user group", () => {
+    addUserGroup({ name: "basic", rpm_limit: 10 });
+    const group = getUserGroupByName("basic");
+    updateUserGroup(group!.id, { rpm_limit: 50, tpm_limit: 10000 });
+    const updated = getUserGroupById(group!.id);
+    expect(updated!.rpm_limit).toBe(50);
+    expect(updated!.tpm_limit).toBe(10000);
+  });
+
+  it("should not delete the default group", () => {
+    const defaultGroup = getDefaultUserGroup();
+    expect(() => deleteUserGroup(defaultGroup!.id)).toThrow("Cannot delete the default user group");
+  });
+
+  it("should delete a non-default group and move users to default", () => {
+    addUserGroup({ name: "temp-group" });
+    const tempGroup = getUserGroupByName("temp-group");
+    const defaultGroup = getDefaultUserGroup();
+
+    // Add user and assign to temp group
+    addUser(11111, "testuser");
+    const user = getUserByTgId(11111);
+    setUserGroup(user!.id, tempGroup!.id);
+
+    deleteUserGroup(tempGroup!.id);
+
+    // User should now be in default group
+    const afterUser = getUserWithLimits(user!.id);
+    expect(afterUser!.group_id).toBe(defaultGroup!.id);
+
+    // temp-group should no longer exist
+    expect(getUserGroupByName("temp-group")).toBeUndefined();
+  });
+});
+
+// ===========================================================================
+// Permission System — Effective Limits Calculation
+// ===========================================================================
+describe("Permission System — Effective Limits", () => {
+  beforeEach(async () => {
+    await initDbAsync(makeTempDbPath());
+  });
+
+  afterEach(() => {
+    closeDb();
+    cleanupTempDir();
+  });
+
+  it("should return unlimited (all zeros) for user in default group with no overrides", () => {
+    addUser(22222, "limitless-user");
+    const user = getUserByTgId(22222);
+    const limits = getEffectiveLimits(user!.id, null);
+    expect(limits.rpm).toBe(0);
+    expect(limits.tpm).toBe(0);
+    expect(limits.concurrency).toBe(0);
+    expect(limits.dailyTokenLimit).toBe(0);
+    expect(limits.monthlyTokenLimit).toBe(0);
+    expect(limits.dailyCostLimit).toBe(0);
+    expect(limits.monthlyCostLimit).toBe(0);
+    expect(limits.expiresAt).toBeNull();
+  });
+
+  it("should apply group limits when user is in a group", () => {
+    addUserGroup({ name: "rate-limited", rpm_limit: 30, tpm_limit: 10000, concurrency_limit: 5 });
+    const group = getUserGroupByName("rate-limited");
+
+    addUser(33333, "limited-user");
+    const user = getUserByTgId(33333);
+    setUserGroup(user!.id, group!.id);
+
+    const limits = getEffectiveLimits(user!.id, null);
+    expect(limits.rpm).toBe(30);
+    expect(limits.tpm).toBe(10000);
+    expect(limits.concurrency).toBe(5);
+  });
+
+  it("should let user override take priority over group", () => {
+    addUserGroup({ name: "standard", rpm_limit: 60, tpm_limit: 20000 });
+    const group = getUserGroupByName("standard");
+
+    addUser(44444, "override-user");
+    const user = getUserByTgId(44444);
+    setUserGroup(user!.id, group!.id);
+    setUserOverrides(user!.id, { rpm_override: 10 }); // stricter override
+
+    const limits = getEffectiveLimits(user!.id, null);
+    expect(limits.rpm).toBe(10); // override wins
+    expect(limits.tpm).toBe(20000); // from group
+  });
+
+  it("should let API key override take priority over user and group", () => {
+    addUserGroup({ name: "tier2", rpm_limit: 60 });
+    const group = getUserGroupByName("tier2");
+
+    addUser(55555, "apikey-override-user");
+    const user = getUserByTgId(55555);
+    setUserGroup(user!.id, group!.id);
+    setUserOverrides(user!.id, { rpm_override: 30 });
+
+    // Create an API key for the user
+    const keyResult = addApiKey(55555);
+    const apiKey = getKeyByValue(keyResult.key);
+    setApiKeyOverrides(apiKey!.id, { rpm_override: 5 }); // API key override wins
+
+    const limits = getEffectiveLimits(user!.id, apiKey!.id);
+    expect(limits.rpm).toBe(5);
+  });
+
+  it("should resolve expiry date from user level", () => {
+    const futureDate = "2099-12-31T23:59:59";
+    addUser(66666, "expiring-user");
+    const user = getUserByTgId(66666);
+    setUserOverrides(user!.id, { expires_at: futureDate });
+
+    const limits = getEffectiveLimits(user!.id, null);
+    expect(limits.expiresAt).toBe(futureDate);
+  });
+
+  it("should let API key expiry override user expiry", () => {
+    const userFuture = "2099-12-31T23:59:59";
+    const apiKeyPast = "2000-01-01T00:00:00";
+
+    addUser(77777, "dual-expiry-user");
+    const user = getUserByTgId(77777);
+    setUserOverrides(user!.id, { expires_at: userFuture });
+
+    const keyResult = addApiKey(77777);
+    const apiKey = getKeyByValue(keyResult.key);
+    setApiKeyOverrides(apiKey!.id, { expires_at: apiKeyPast });
+
+    const limits = getEffectiveLimits(user!.id, apiKey!.id);
+    expect(limits.expiresAt).toBe(apiKeyPast);
+  });
+});
+
+// ===========================================================================
+// Permission System — Quota Queries
+// ===========================================================================
+describe("Permission System — Quota Queries", () => {
+  beforeEach(async () => {
+    await initDbAsync(makeTempDbPath());
+  });
+
+  afterEach(() => {
+    closeDb();
+    cleanupTempDir();
+  });
+
+  it("should return zero usage for new user", () => {
+    addUser(88888, "no-usage-user");
+    const user = getUserByTgId(88888);
+
+    const daily = getDailyUsage(user!.id, null);
+    expect(daily.totalTokens).toBe(0);
+    expect(daily.totalCost).toBe(0);
+
+    const monthly = getMonthlyUsage(user!.id, null);
+    expect(monthly.totalTokens).toBe(0);
+    expect(monthly.totalCost).toBe(0);
+  });
+
+  it("should calculate daily usage from usage table", () => {
+    // Setup: user, provider, api key
+    addUser(99990, "quota-user");
+    const user = getUserByTgId(99990);
+    addProvider({
+      name: "TestProvider",
+      api_type: "openai_chat",
+      base_url: "https://example.com/v1",
+      api_key: "sk-provider-key",
+      models: "gpt-4o",
+    });
+    const provider = getProviders()[0];
+    const keyResult = addApiKey(99990);
+    const apiKey = getKeyByValue(keyResult.key);
+
+    // Record usage
+    recordUsage(apiKey!.id, provider!.id, 1000, 500, 0.01, 0.02, "gpt-4o");
+    recordUsage(apiKey!.id, provider!.id, 2000, 1000, 0.02, 0.04, "gpt-4o");
+    flushUsageQueue();
+
+    const daily = getDailyUsage(user!.id, null);
+    expect(daily.totalTokens).toBe(4500); // (1000+500) + (2000+1000)
+    expect(daily.totalCost).toBeCloseTo(0.09, 5); // (0.01+0.02) + (0.02+0.04)
+  });
+
+  it("should filter usage by specific api key", () => {
+    addUser(99991, "multi-key-user");
+    const user = getUserByTgId(99991);
+    addProvider({
+      name: "Provider2",
+      api_type: "openai_chat",
+      base_url: "https://example.com/v1",
+      api_key: "sk-provider-key2",
+      models: "gpt-4o",
+    });
+    const provider = getProviders()[0];
+
+    const key1 = addApiKey(99991);
+    const apiKey1 = getKeyByValue(key1.key);
+    const key2 = addApiKey(99991);
+    const apiKey2 = getKeyByValue(key2.key);
+
+    recordUsage(apiKey1!.id, provider!.id, 3000, 1000, 0.05, 0.05, "gpt-4o");
+    recordUsage(apiKey2!.id, provider!.id, 5000, 2000, 0.10, 0.10, "gpt-4o");
+    flushUsageQueue();
+
+    // Per-key usage
+    const key1Daily = getDailyUsage(user!.id, apiKey1!.id);
+    expect(key1Daily.totalTokens).toBe(4000); // 3000+1000 only from key1
+    expect(key1Daily.totalCost).toBeCloseTo(0.10, 5);
+
+    // Total user usage (all keys)
+    const totalDaily = getDailyUsage(user!.id, null);
+    expect(totalDaily.totalTokens).toBe(11000); // 4000 + 7000
+    expect(totalDaily.totalCost).toBeCloseTo(0.30, 5);
+  });
+});
+
+// ===========================================================================
+// Permission System — isExpired helper
+// ===========================================================================
+describe("Permission System — isExpired", () => {
+  it("should return false for null expiry", () => {
+    expect(isExpired(null)).toBe(false);
+  });
+
+  it("should return false for future date", () => {
+    expect(isExpired("2099-12-31T23:59:59")).toBe(false);
+  });
+
+  it("should return true for past date", () => {
+    expect(isExpired("2000-01-01T00:00:00")).toBe(true);
   });
 });

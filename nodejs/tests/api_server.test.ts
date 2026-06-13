@@ -164,6 +164,15 @@ vi.mock("../src/db/database.js", () => {
     getUserByTgId: vi.fn(() => undefined),
     getActiveCodingForApiKey: vi.fn(() => null),
     incrementCodingSessionStats: vi.fn(),
+    // Permission system mocks — all zeros = unlimited (no restrictions in tests)
+    getEffectiveLimits: vi.fn(() => ({
+      rpm: 0, tpm: 0, concurrency: 0,
+      dailyTokenLimit: 0, monthlyTokenLimit: 0,
+      dailyCostLimit: 0, monthlyCostLimit: 0,
+      expiresAt: 0,
+    })),
+    getDailyUsage: vi.fn(() => ({ totalTokens: 0, totalCost: 0 })),
+    getMonthlyUsage: vi.fn(() => ({ totalTokens: 0, totalCost: 0 })),
   };
 });
 

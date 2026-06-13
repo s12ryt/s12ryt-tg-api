@@ -12,6 +12,7 @@ import { initDbAsync, closeDb } from "./db/database.js";
 import { startServer } from "./api/server.js";
 import { registerUserHandlers } from "./bot/handlers/userHandlers.js";
 import { registerAdminHandlers } from "./bot/handlers/adminHandlers.js";
+import { registerLimitHandlers } from "./bot/handlers/limitHandlers.js";
 
 import { Bot, Context, session } from "grammy";
 import type { BotCommand } from "grammy/types";
@@ -50,6 +51,7 @@ async function setBotCommands(bot: MyBot): Promise<void> {
     { command: "usage", description: "查詢 Token 用量" },
     { command: "coding", description: "Coding 模式管理（開關/設定）" },
     { command: "model_catch", description: "抓取 API 模型列表" },
+    { command: "my_limits", description: "查看我的限制和用量" },
   ];
 
   // 管理員指令
@@ -59,6 +61,7 @@ async function setBotCommands(bot: MyBot): Promise<void> {
     { command: "admin_user", description: "用戶管理（新增/停用/刪除/編輯/移除Key）" },
     { command: "sub_url", description: "修改 API 接口地址" },
     { command: "api_test", description: "測試 API 協議連通性" },
+    { command: "limits", description: "權限管理（分組/限制/配額）" },
   ];
 
   try {
@@ -125,6 +128,7 @@ async function main(): Promise<void> {
   // Register bot handlers
   registerUserHandlers(bot);
   registerAdminHandlers(bot);
+  registerLimitHandlers(bot);
 
   // 3.5 Set bot commands menu
   await setBotCommands(bot);

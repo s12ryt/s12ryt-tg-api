@@ -6,6 +6,7 @@
  */
 
 import { recordUsage as dbRecordUsage } from "../db/database.js";
+import { recordTokenUsage } from "./rateLimiter.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -23,6 +24,7 @@ export interface Cost {
 
 export interface UsageRecordParams {
   apiKeyId: string;
+  userId?: string;
   providerId: string;
   inputTokens: number;
   outputTokens: number;
@@ -97,6 +99,7 @@ export function calculateCost(
 export async function recordUsage(params: UsageRecordParams): Promise<void> {
   const {
     apiKeyId,
+    userId,
     providerId,
     inputTokens,
     outputTokens,
@@ -111,6 +114,11 @@ export async function recordUsage(params: UsageRecordParams): Promise<void> {
     `[usage] api_key=${apiKeyId} provider=${providerId} model=${model} ` +
       `in=${inputTokens} out=${outputTokens} cost=$${totalCost.toFixed(8)}`
   );
+
+  // Record token usage for TPM rate limiting (in-memory sliding window)
+  if (userId) {
+    recordTokenUsage(userId, apiKeyId, inputTokens + outputTokens);
+  }
 
   // Enqueue for batched writing — no DB I/O here
   dbRecordUsage(

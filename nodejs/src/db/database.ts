@@ -192,6 +192,74 @@ function createTables(db: SqlJsDatabase): void {
   // Index for fast lookup
   db.run(`CREATE INDEX IF NOT EXISTS idx_model_restrictions_user ON model_restrictions(user_id, api_key_id)`);
 
+  // -------------------------------------------------------------------------
+  // user_groups table — rate limit / concurrency / quota profiles
+  // -------------------------------------------------------------------------
+  db.run(`
+    CREATE TABLE IF NOT EXISTS user_groups (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      display_name TEXT DEFAULT '',
+      rpm_limit INTEGER NOT NULL DEFAULT 0,
+      tpm_limit INTEGER NOT NULL DEFAULT 0,
+      concurrency_limit INTEGER NOT NULL DEFAULT 0,
+      daily_token_limit INTEGER NOT NULL DEFAULT 0,
+      monthly_token_limit INTEGER NOT NULL DEFAULT 0,
+      daily_cost_limit REAL NOT NULL DEFAULT 0,
+      monthly_cost_limit REAL NOT NULL DEFAULT 0,
+      is_default INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+
+  // Migration: add limit / expiry columns to users table
+  const userLimitColumns = [
+    "group_id INTEGER",
+    "expires_at TEXT",
+    "rpm_override INTEGER",
+    "tpm_override INTEGER",
+    "concurrency_override INTEGER",
+    "daily_token_override INTEGER",
+    "monthly_token_override INTEGER",
+    "daily_cost_override REAL",
+    "monthly_cost_override REAL",
+  ];
+  for (const col of userLimitColumns) {
+    const colName = col.split(" ")[0];
+    try {
+      db.run(`ALTER TABLE users ADD COLUMN ${col}`);
+    } catch {
+      // Column already exists — ignore
+    }
+  }
+
+  // Migration: add limit / expiry columns to api_keys table
+  const apiKeyLimitColumns = [
+    "expires_at TEXT",
+    "rpm_override INTEGER",
+    "tpm_override INTEGER",
+    "concurrency_override INTEGER",
+    "daily_token_override INTEGER",
+    "monthly_token_override INTEGER",
+    "daily_cost_override REAL",
+    "monthly_cost_override REAL",
+  ];
+  for (const col of apiKeyLimitColumns) {
+    const colName = col.split(" ")[0];
+    try {
+      db.run(`ALTER TABLE api_keys ADD COLUMN ${col}`);
+    } catch {
+      // Column already exists — ignore
+    }
+  }
+
+  // Seed default group if none exists
+  const defaultGroup = db.exec("SELECT id FROM user_groups WHERE is_default = 1 LIMIT 1");
+  if (!defaultGroup.length) {
+    db.run(`INSERT INTO user_groups (name, display_name, is_default) VALUES ('default', 'Default (unlimited)', 1)`);
+  }
+
   // Migration: openai → openai_chat (split api_type)
   const migrationRow = db.exec(
     "SELECT value FROM settings WHERE key = 'migration_openai_split'"
@@ -1391,4 +1459,344 @@ function filterModelsByRestriction(
   } else {
     return allModels.filter((m) => !restrictedModels.has(m));
   }
+}
+
+// ===========================================================================
+// User Groups & Limits Management
+// ===========================================================================
+
+export interface UserGroup {
+  id: number;
+  name: string;
+  display_name: string | null;
+  rpm_limit: number;
+  tpm_limit: number;
+  concurrency_limit: number;
+  daily_token_limit: number;
+  monthly_token_limit: number;
+  daily_cost_limit: number;
+  monthly_cost_limit: number;
+  is_default: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UserWithLimits extends User {
+  group_id: number | null;
+  expires_at: string | null;
+  rpm_override: number | null;
+  tpm_override: number | null;
+  concurrency_override: number | null;
+  daily_token_override: number | null;
+  monthly_token_override: number | null;
+  daily_cost_override: number | null;
+  monthly_cost_override: number | null;
+}
+
+export interface ApiKeyWithLimits extends ApiKey {
+  expires_at: string | null;
+  rpm_override: number | null;
+  tpm_override: number | null;
+  concurrency_override: number | null;
+  daily_token_override: number | null;
+  monthly_token_override: number | null;
+  daily_cost_override: number | null;
+  monthly_cost_override: number | null;
+}
+
+/**
+ * Effective limits for a user + API key combination.
+ * A value of 0 means unlimited.
+ */
+export interface EffectiveLimits {
+  rpm: number;
+  tpm: number;
+  concurrency: number;
+  dailyTokenLimit: number;
+  monthlyTokenLimit: number;
+  dailyCostLimit: number;
+  monthlyCostLimit: number;
+  expiresAt: string | null;
+}
+
+// --- User Groups CRUD ---
+
+export function getUserGroups(): UserGroup[] {
+  return queryAll("SELECT * FROM user_groups ORDER BY is_default DESC, name ASC") as unknown as UserGroup[];
+}
+
+export function getUserGroupById(id: number): UserGroup | undefined {
+  return queryOne("SELECT * FROM user_groups WHERE id = ?", [id]) as unknown as UserGroup | undefined;
+}
+
+export function getUserGroupByName(name: string): UserGroup | undefined {
+  return queryOne("SELECT * FROM user_groups WHERE name = ?", [name]) as unknown as UserGroup | undefined;
+}
+
+export function getDefaultUserGroup(): UserGroup | undefined {
+  return queryOne("SELECT * FROM user_groups WHERE is_default = 1") as unknown as UserGroup | undefined;
+}
+
+export interface UserGroupInput {
+  name: string;
+  display_name?: string | null;
+  rpm_limit?: number;
+  tpm_limit?: number;
+  concurrency_limit?: number;
+  daily_token_limit?: number;
+  monthly_token_limit?: number;
+  daily_cost_limit?: number;
+  monthly_cost_limit?: number;
+}
+
+export function addUserGroup(data: UserGroupInput): void {
+  runSql(
+    `INSERT INTO user_groups (name, display_name, rpm_limit, tpm_limit, concurrency_limit,
+      daily_token_limit, monthly_token_limit, daily_cost_limit, monthly_cost_limit)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      data.name,
+      data.display_name ?? null,
+      data.rpm_limit ?? 0,
+      data.tpm_limit ?? 0,
+      data.concurrency_limit ?? 0,
+      data.daily_token_limit ?? 0,
+      data.monthly_token_limit ?? 0,
+      data.daily_cost_limit ?? 0,
+      data.monthly_cost_limit ?? 0,
+    ] as SqlValue[]
+  );
+}
+
+export function updateUserGroup(id: number, data: Partial<UserGroupInput>): void {
+  const fields: string[] = [];
+  const values: SqlValue[] = [];
+
+  const allowedFields: (keyof UserGroupInput)[] = [
+    "name", "display_name", "rpm_limit", "tpm_limit", "concurrency_limit",
+    "daily_token_limit", "monthly_token_limit", "daily_cost_limit", "monthly_cost_limit"
+  ];
+
+  for (const key of allowedFields) {
+    if (key in data && data[key] !== undefined) {
+      fields.push(`${key} = ?`);
+      values.push(data[key] as SqlValue);
+    }
+  }
+
+  if (fields.length === 0) return;
+
+  fields.push("updated_at = datetime('now')");
+  values.push(id);
+
+  runSql(`UPDATE user_groups SET ${fields.join(", ")} WHERE id = ?`, values);
+}
+
+export function deleteUserGroup(id: number): void {
+  // Prevent deleting the default group
+  const group = getUserGroupById(id);
+  if (group && group.is_default === 1) {
+    throw new Error("Cannot delete the default user group");
+  }
+  // Reset all users in this group to the default group
+  const defaultGroup = getDefaultUserGroup();
+  if (defaultGroup && defaultGroup.id !== id) {
+    runSql("UPDATE users SET group_id = ? WHERE group_id = ?", [defaultGroup.id, id]);
+  }
+  runSql("DELETE FROM user_groups WHERE id = ?", [id]);
+}
+
+// --- User limits management ---
+
+export function getUserWithLimits(id: number): UserWithLimits | undefined {
+  return queryOne("SELECT * FROM users WHERE id = ?", [id]) as unknown as UserWithLimits | undefined;
+}
+
+export function setUserGroup(userId: number, groupId: number): void {
+  runSql("UPDATE users SET group_id = ? WHERE id = ?", [groupId, userId]);
+}
+
+export interface UserOverridesInput {
+  expires_at?: string | null;
+  rpm_override?: number | null;
+  tpm_override?: number | null;
+  concurrency_override?: number | null;
+  daily_token_override?: number | null;
+  monthly_token_override?: number | null;
+  daily_cost_override?: number | null;
+  monthly_cost_override?: number | null;
+}
+
+export function setUserOverrides(userId: number, overrides: UserOverridesInput): void {
+  const fields: string[] = [];
+  const values: SqlValue[] = [];
+
+  const allowedFields: (keyof UserOverridesInput)[] = [
+    "expires_at", "rpm_override", "tpm_override", "concurrency_override",
+    "daily_token_override", "monthly_token_override", "daily_cost_override", "monthly_cost_override"
+  ];
+
+  for (const key of allowedFields) {
+    if (key in overrides && overrides[key] !== undefined) {
+      fields.push(`${key} = ?`);
+      values.push(overrides[key] as SqlValue);
+    }
+  }
+
+  if (fields.length === 0) return;
+  values.push(userId);
+
+  runSql(`UPDATE users SET ${fields.join(", ")} WHERE id = ?`, values);
+}
+
+// --- API Key limits management ---
+
+export function getApiKeyWithLimits(id: number): ApiKeyWithLimits | undefined {
+  return queryOne("SELECT * FROM api_keys WHERE id = ?", [id]) as unknown as ApiKeyWithLimits | undefined;
+}
+
+export interface ApiKeyOverridesInput {
+  expires_at?: string | null;
+  rpm_override?: number | null;
+  tpm_override?: number | null;
+  concurrency_override?: number | null;
+  daily_token_override?: number | null;
+  monthly_token_override?: number | null;
+  daily_cost_override?: number | null;
+  monthly_cost_override?: number | null;
+}
+
+export function setApiKeyOverrides(apiKeyId: number, overrides: ApiKeyOverridesInput): void {
+  const fields: string[] = [];
+  const values: SqlValue[] = [];
+
+  const allowedFields: (keyof ApiKeyOverridesInput)[] = [
+    "expires_at", "rpm_override", "tpm_override", "concurrency_override",
+    "daily_token_override", "monthly_token_override", "daily_cost_override", "monthly_cost_override"
+  ];
+
+  for (const key of allowedFields) {
+    if (key in overrides && overrides[key] !== undefined) {
+      fields.push(`${key} = ?`);
+      values.push(overrides[key] as SqlValue);
+    }
+  }
+
+  if (fields.length === 0) return;
+  values.push(apiKeyId);
+
+  runSql(`UPDATE api_keys SET ${fields.join(", ")} WHERE id = ?`, values);
+}
+
+// --- Effective limits calculation ---
+
+/**
+ * Helper: pick first non-null value from overrides → group → 0.
+ * null = not set (inherit), 0 = explicitly unlimited, >0 = specific limit.
+ */
+function pickLimit(
+  apiKeyOverride: number | null | undefined,
+  userOverride: number | null | undefined,
+  groupLimit: number | null | undefined,
+): number {
+  if (apiKeyOverride !== null && apiKeyOverride !== undefined) return apiKeyOverride;
+  if (userOverride !== null && userOverride !== undefined) return userOverride;
+  if (groupLimit !== null && groupLimit !== undefined) return groupLimit;
+  return 0; // unlimited
+}
+
+/**
+ * Calculate effective limits for a given user + API key.
+ * Priority: apiKey override > user override > user group limit > 0 (unlimited).
+ */
+export function getEffectiveLimits(userId: number, apiKeyId: number | null): EffectiveLimits {
+  const user = getUserWithLimits(userId);
+  let group: UserGroup | undefined;
+  if (user?.group_id) {
+    group = getUserGroupById(user.group_id);
+  }
+  if (!group) {
+    group = getDefaultUserGroup();
+  }
+
+  let apiKey: ApiKeyWithLimits | undefined;
+  if (apiKeyId !== null) {
+    apiKey = getApiKeyWithLimits(apiKeyId);
+  }
+
+  return {
+    rpm: pickLimit(apiKey?.rpm_override, user?.rpm_override, group?.rpm_limit),
+    tpm: pickLimit(apiKey?.tpm_override, user?.tpm_override, group?.tpm_limit),
+    concurrency: pickLimit(apiKey?.concurrency_override, user?.concurrency_override, group?.concurrency_limit),
+    dailyTokenLimit: pickLimit(apiKey?.daily_token_override, user?.daily_token_override, group?.daily_token_limit),
+    monthlyTokenLimit: pickLimit(apiKey?.monthly_token_override, user?.monthly_token_override, group?.monthly_token_limit),
+    dailyCostLimit: pickLimit(apiKey?.daily_cost_override, user?.daily_cost_override, group?.daily_cost_limit),
+    monthlyCostLimit: pickLimit(apiKey?.monthly_cost_override, user?.monthly_cost_override, group?.monthly_cost_limit),
+    expiresAt: apiKey?.expires_at ?? user?.expires_at ?? null,
+  };
+}
+
+// --- Quota queries (aggregate from usage table) ---
+
+export interface UsageQuota {
+  totalTokens: number;
+  totalCost: number;
+}
+
+/**
+ * Get today's token usage and cost for a user or specific API key.
+ */
+export function getDailyUsage(userId: number, apiKeyId: number | null = null): UsageQuota {
+  return getPeriodUsage("day", userId, apiKeyId);
+}
+
+/**
+ * Get this month's token usage and cost for a user or specific API key.
+ */
+export function getMonthlyUsage(userId: number, apiKeyId: number | null = null): UsageQuota {
+  return getPeriodUsage("month", userId, apiKeyId);
+}
+
+function getPeriodUsage(period: "day" | "month", userId: number, apiKeyId: number | null): UsageQuota {
+  const dateCondition = period === "day"
+    ? "date(u.created_at) = date('now')"
+    : "strftime('%Y-%m', u.created_at) = strftime('%Y-%m', 'now')";
+
+  let sql: string;
+  let params: SqlValue[];
+
+  if (apiKeyId !== null) {
+    // Query by specific API key
+    sql = `SELECT
+             COALESCE(SUM(input_tokens + output_tokens), 0) AS total_tokens,
+             COALESCE(SUM(input_cost + output_cost), 0) AS total_cost
+           FROM usage
+           WHERE api_key_id = ? AND ${dateCondition.replace("u.", "")}`;
+    params = [apiKeyId];
+  } else {
+    // Query by user (all their API keys)
+    sql = `SELECT
+             COALESCE(SUM(u.input_tokens + u.output_tokens), 0) AS total_tokens,
+             COALESCE(SUM(u.input_cost + u.output_cost), 0) AS total_cost
+           FROM usage u
+           JOIN api_keys ak ON u.api_key_id = ak.id
+           WHERE ak.user_id = ? AND ${dateCondition}`;
+    params = [userId];
+  }
+
+  const row = queryOne(sql, params);
+  return {
+    totalTokens: Number(row?.total_tokens ?? 0),
+    totalCost: Number(row?.total_cost ?? 0),
+  };
+}
+
+/**
+ * Check if a user/API key has expired.
+ * Returns true if expired, false otherwise.
+ */
+export function isExpired(expiresAt: string | null): boolean {
+  if (!expiresAt) return false;
+  const expiry = new Date(expiresAt + "Z"); // treat as UTC
+  return expiry.getTime() < Date.now();
 }
