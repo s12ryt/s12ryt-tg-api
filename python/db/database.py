@@ -371,6 +371,56 @@ async def init_db() -> None:
             await db.commit()
             logger.info("Migration complete: %d providers migrated to multi-key format", len(rows))
 
+        # Migration: permission system columns on users + api_keys
+        user_perm_columns = [
+            "group_id INTEGER",
+            "expires_at TEXT",
+            "rpm_override INTEGER",
+            "tpm_override INTEGER",
+            "concurrency_override INTEGER",
+            "daily_token_override INTEGER",
+            "monthly_token_override INTEGER",
+            "daily_cost_override REAL",
+            "monthly_cost_override REAL",
+        ]
+        for col_def in user_perm_columns:
+            col_name = col_def.split()[0]
+            try:
+                await db.execute(f"ALTER TABLE users ADD COLUMN {col_def}")
+            except aiosqlite.OperationalError:
+                pass  # Column already exists
+
+        api_key_perm_columns = [
+            "expires_at TEXT",
+            "rpm_override INTEGER",
+            "tpm_override INTEGER",
+            "concurrency_override INTEGER",
+            "daily_token_override INTEGER",
+            "monthly_token_override INTEGER",
+            "daily_cost_override REAL",
+            "monthly_cost_override REAL",
+        ]
+        for col_def in api_key_perm_columns:
+            col_name = col_def.split()[0]
+            try:
+                await db.execute(f"ALTER TABLE api_keys ADD COLUMN {col_def}")
+            except aiosqlite.OperationalError:
+                pass  # Column already exists
+
+        # Seed default user group if not exists
+        cursor = await db.execute("SELECT id FROM user_groups WHERE is_default = 1")
+        existing_default = await cursor.fetchone()
+        if not existing_default:
+            now = datetime.now(timezone.utc).isoformat()
+            await db.execute(
+                """
+                INSERT INTO user_groups (name, display_name, is_default, created_at, updated_at)
+                VALUES ('default', 'Default Group', 1, ?, ?)
+                """,
+                (now, now),
+            )
+            logger.info("Seeded default user group")
+
         await db.commit()
 
     # Rebuild provider cache and start usage flush timer
@@ -1188,3 +1238,388 @@ async def get_allowed_models(
 
     # No restriction → admin gets all, non-admin gets nothing
     return list(all_models) if is_admin else []
+
+
+# ============================================================
+# Permission System — User Groups
+# ============================================================
+
+
+async def get_user_groups() -> list[dict]:
+    """Get all user groups, default first."""
+    async with await get_connection() as db:
+        cursor = await db.execute(
+            "SELECT * FROM user_groups ORDER BY is_default DESC, name ASC"
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+async def get_user_group_by_id(group_id: int) -> dict | None:
+    """Get a user group by ID."""
+    async with await get_connection() as db:
+        cursor = await db.execute("SELECT * FROM user_groups WHERE id = ?", (group_id,))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
+async def get_user_group_by_name(name: str) -> dict | None:
+    """Get a user group by name."""
+    async with await get_connection() as db:
+        cursor = await db.execute("SELECT * FROM user_groups WHERE name = ?", (name,))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
+async def get_default_user_group() -> dict | None:
+    """Get the default user group."""
+    async with await get_connection() as db:
+        cursor = await db.execute("SELECT * FROM user_groups WHERE is_default = 1")
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
+async def add_user_group(
+    name: str,
+    display_name: str | None = None,
+    rpm_limit: int = 0,
+    tpm_limit: int = 0,
+    concurrency_limit: int = 0,
+    daily_token_limit: int = 0,
+    monthly_token_limit: int = 0,
+    daily_cost_limit: float = 0,
+    monthly_cost_limit: float = 0,
+) -> dict | None:
+    """Add a new user group. Returns the created group or None on conflict."""
+    now = datetime.now(timezone.utc).isoformat()
+    async with await get_connection() as db:
+        try:
+            await db.execute(
+                """
+                INSERT INTO user_groups
+                    (name, display_name, rpm_limit, tpm_limit, concurrency_limit,
+                     daily_token_limit, monthly_token_limit, daily_cost_limit, monthly_cost_limit,
+                     is_default, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                """,
+                (name, display_name, rpm_limit, tpm_limit, concurrency_limit,
+                 daily_token_limit, monthly_token_limit, daily_cost_limit, monthly_cost_limit,
+                 now, now),
+            )
+            await db.commit()
+        except aiosqlite.IntegrityError:
+            return None
+    return await get_user_group_by_name(name)
+
+
+async def update_user_group(group_id: int, **kwargs) -> dict | None:
+    """Update a user group's fields."""
+    allowed_fields = {
+        "name", "display_name", "rpm_limit", "tpm_limit", "concurrency_limit",
+        "daily_token_limit", "monthly_token_limit", "daily_cost_limit", "monthly_cost_limit",
+    }
+    updates = {k: v for k, v in kwargs.items() if k in allowed_fields}
+    if not updates:
+        return await get_user_group_by_id(group_id)
+
+    updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+    set_clause = ", ".join(f"{k} = ?" for k in updates)
+    values = list(updates.values()) + [group_id]
+
+    async with await get_connection() as db:
+        await db.execute(f"UPDATE user_groups SET {set_clause} WHERE id = ?", values)
+        await db.commit()
+    return await get_user_group_by_id(group_id)
+
+
+async def delete_user_group(group_id: int) -> None:
+    """Delete a user group. Prevents deleting the default group.
+    Moves all users in this group to the default group."""
+    group = await get_user_group_by_id(group_id)
+    if group and group["is_default"] == 1:
+        raise ValueError("Cannot delete the default user group")
+
+    default_group = await get_default_user_group()
+    if default_group and default_group["id"] != group_id:
+        async with await get_connection() as db:
+            await db.execute(
+                "UPDATE users SET group_id = ? WHERE group_id = ?",
+                (default_group["id"], group_id),
+            )
+            await db.execute("DELETE FROM user_groups WHERE id = ?", (group_id,))
+            await db.commit()
+    else:
+        async with await get_connection() as db:
+            await db.execute("DELETE FROM user_groups WHERE id = ?", (group_id,))
+            await db.commit()
+
+
+# ============================================================
+# Permission System — User & API Key limits management
+# ============================================================
+
+
+async def get_user_with_limits(user_id: int) -> dict | None:
+    """Get a user with all permission columns."""
+    async with await get_connection() as db:
+        cursor = await db.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
+async def set_user_group(user_id: int, group_id: int) -> None:
+    """Set a user's group."""
+    async with await get_connection() as db:
+        await db.execute(
+            "UPDATE users SET group_id = ? WHERE id = ?", (group_id, user_id)
+        )
+        await db.commit()
+
+
+async def set_user_overrides(
+    user_id: int,
+    expires_at: str | None = None,
+    rpm_override: int | None = None,
+    tpm_override: int | None = None,
+    concurrency_override: int | None = None,
+    daily_token_override: int | None = None,
+    monthly_token_override: int | None = None,
+    daily_cost_override: float | None = None,
+    monthly_cost_override: float | None = None,
+) -> None:
+    """Set user-level limit overrides. Only provided values are updated."""
+    allowed = {
+        "expires_at": expires_at,
+        "rpm_override": rpm_override,
+        "tpm_override": tpm_override,
+        "concurrency_override": concurrency_override,
+        "daily_token_override": daily_token_override,
+        "monthly_token_override": monthly_token_override,
+        "daily_cost_override": daily_cost_override,
+        "monthly_cost_override": monthly_cost_override,
+    }
+    fields = []
+    values = []
+    for k, v in allowed.items():
+        if v is not None:
+            fields.append(f"{k} = ?")
+            values.append(v)
+    if not fields:
+        return
+    values.append(user_id)
+    async with await get_connection() as db:
+        await db.execute(
+            f"UPDATE users SET {', '.join(fields)} WHERE id = ?", values
+        )
+        await db.commit()
+
+
+async def get_api_key_with_limits(api_key_id: int) -> dict | None:
+    """Get an API key with all permission columns."""
+    async with await get_connection() as db:
+        cursor = await db.execute("SELECT * FROM api_keys WHERE id = ?", (api_key_id,))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
+async def set_api_key_overrides(
+    api_key_id: int,
+    expires_at: str | None = None,
+    rpm_override: int | None = None,
+    tpm_override: int | None = None,
+    concurrency_override: int | None = None,
+    daily_token_override: int | None = None,
+    monthly_token_override: int | None = None,
+    daily_cost_override: float | None = None,
+    monthly_cost_override: float | None = None,
+) -> None:
+    """Set API key-level limit overrides. Only provided values are updated."""
+    allowed = {
+        "expires_at": expires_at,
+        "rpm_override": rpm_override,
+        "tpm_override": tpm_override,
+        "concurrency_override": concurrency_override,
+        "daily_token_override": daily_token_override,
+        "monthly_token_override": monthly_token_override,
+        "daily_cost_override": daily_cost_override,
+        "monthly_cost_override": monthly_cost_override,
+    }
+    fields = []
+    values = []
+    for k, v in allowed.items():
+        if v is not None:
+            fields.append(f"{k} = ?")
+            values.append(v)
+    if not fields:
+        return
+    values.append(api_key_id)
+    async with await get_connection() as db:
+        await db.execute(
+            f"UPDATE api_keys SET {', '.join(fields)} WHERE id = ?", values
+        )
+        await db.commit()
+
+
+# ============================================================
+# Permission System — Effective limits calculation
+# ============================================================
+
+
+def _pick_limit(
+    api_key_override: int | float | None,
+    user_override: int | float | None,
+    group_limit: int | float | None,
+) -> int | float:
+    """Pick first non-null value. null = inherit, 0 = unlimited."""
+    if api_key_override is not None:
+        return api_key_override
+    if user_override is not None:
+        return user_override
+    if group_limit is not None:
+        return group_limit
+    return 0  # unlimited
+
+
+async def get_effective_limits(
+    user_id: int,
+    api_key_id: int | None = None,
+) -> dict:
+    """Calculate effective limits for a given user + API key.
+
+    Priority: apiKey override > user override > user group limit > 0 (unlimited).
+
+    Returns dict with keys: rpm, tpm, concurrency, daily_token_limit,
+    monthly_token_limit, daily_cost_limit, monthly_cost_limit, expires_at.
+    A value of 0 means unlimited.
+    """
+    user = await get_user_with_limits(user_id)
+
+    group = None
+    if user and user.get("group_id"):
+        group = await get_user_group_by_id(user["group_id"])
+    if not group:
+        group = await get_default_user_group()
+
+    api_key = None
+    if api_key_id is not None:
+        api_key = await get_api_key_with_limits(api_key_id)
+
+    return {
+        "rpm": _pick_limit(
+            api_key.get("rpm_override") if api_key else None,
+            user.get("rpm_override") if user else None,
+            group.get("rpm_limit") if group else None,
+        ),
+        "tpm": _pick_limit(
+            api_key.get("tpm_override") if api_key else None,
+            user.get("tpm_override") if user else None,
+            group.get("tpm_limit") if group else None,
+        ),
+        "concurrency": _pick_limit(
+            api_key.get("concurrency_override") if api_key else None,
+            user.get("concurrency_override") if user else None,
+            group.get("concurrency_limit") if group else None,
+        ),
+        "daily_token_limit": _pick_limit(
+            api_key.get("daily_token_override") if api_key else None,
+            user.get("daily_token_override") if user else None,
+            group.get("daily_token_limit") if group else None,
+        ),
+        "monthly_token_limit": _pick_limit(
+            api_key.get("monthly_token_override") if api_key else None,
+            user.get("monthly_token_override") if user else None,
+            group.get("monthly_token_limit") if group else None,
+        ),
+        "daily_cost_limit": _pick_limit(
+            api_key.get("daily_cost_override") if api_key else None,
+            user.get("daily_cost_override") if user else None,
+            group.get("daily_cost_limit") if group else None,
+        ),
+        "monthly_cost_limit": _pick_limit(
+            api_key.get("monthly_cost_override") if api_key else None,
+            user.get("monthly_cost_override") if user else None,
+            group.get("monthly_cost_limit") if group else None,
+        ),
+        "expires_at": (
+            (api_key.get("expires_at") if api_key else None)
+            or (user.get("expires_at") if user else None)
+            or None
+        ),
+    }
+
+
+# ============================================================
+# Permission System — Quota queries
+# ============================================================
+
+
+async def _get_period_usage(
+    period: str, user_id: int, api_key_id: int | None = None
+) -> dict[str, float]:
+    """Get usage for a time period (day or month)."""
+    # Use substr() because created_at may be stored as ISO 8601 with timezone
+    # offset (e.g. 2026-01-01T12:00:00.123456+00:00), which SQLite's date()
+    # and strftime() cannot parse, returning NULL.
+    if period == "day":
+        date_cond = "substr(created_at, 1, 10) = date('now')"
+    else:
+        date_cond = "substr(created_at, 1, 7) = strftime('%Y-%m', 'now')"
+
+    async with await get_connection() as db:
+        if api_key_id is not None:
+            cursor = await db.execute(
+                f"""
+                SELECT
+                    COALESCE(SUM(input_tokens + output_tokens), 0) AS total_tokens,
+                    COALESCE(SUM(input_cost + output_cost), 0) AS total_cost
+                FROM usage
+                WHERE api_key_id = ? AND {date_cond}
+                """,
+                (api_key_id,),
+            )
+        else:
+            cursor = await db.execute(
+                f"""
+                SELECT
+                    COALESCE(SUM(u.input_tokens + u.output_tokens), 0) AS total_tokens,
+                    COALESCE(SUM(u.input_cost + u.output_cost), 0) AS total_cost
+                FROM usage u
+                JOIN api_keys ak ON u.api_key_id = ak.id
+                WHERE ak.user_id = ? AND {date_cond.replace('created_at', 'u.created_at')}
+                """,
+                (user_id,),
+            )
+        row = await cursor.fetchone()
+        if row:
+            return {
+                "total_tokens": row["total_tokens"] or 0,
+                "total_cost": row["total_cost"] or 0,
+            }
+        return {"total_tokens": 0, "total_cost": 0}
+
+
+async def get_daily_usage(
+    user_id: int, api_key_id: int | None = None
+) -> dict[str, float]:
+    """Get today's token usage and cost."""
+    return await _get_period_usage("day", user_id, api_key_id)
+
+
+async def get_monthly_usage(
+    user_id: int, api_key_id: int | None = None
+) -> dict[str, float]:
+    """Get this month's token usage and cost."""
+    return await _get_period_usage("month", user_id, api_key_id)
+
+
+def is_expired(expires_at: str | None) -> bool:
+    """Check if an expiry date has passed. Returns True if expired."""
+    if not expires_at:
+        return False
+    try:
+        # Treat as UTC if no timezone suffix
+        dt_str = expires_at if expires_at.endswith("Z") or "+" in expires_at else expires_at + "Z"
+        expiry = datetime.fromisoformat(dt_str)
+        return expiry.timestamp() < time.time()
+    except Exception:
+        return False

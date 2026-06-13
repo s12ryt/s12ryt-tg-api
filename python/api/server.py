@@ -15,6 +15,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from .middleware import AuthMiddleware
+from .rate_limiter import RateLimitMiddleware, record_token_usage
+from .quota_checker import QuotaCheckMiddleware
 from . import providers as prov
 from .usage_tracker import extract_usage, calculate_cost, record_usage
 from config import Config
@@ -38,6 +40,8 @@ app = FastAPI(title="s12ryt API Proxy", version="1.0.0")
 # Middleware
 # ---------------------------------------------------------------------------
 
+# Starlette add_middleware inserts at position 0 (last added = outermost = runs first).
+# Request flow: Auth → RateLimit → QuotaCheck → CORS → endpoint
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -45,6 +49,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(QuotaCheckMiddleware)
+app.add_middleware(RateLimitMiddleware)
 app.add_middleware(AuthMiddleware)
 
 # ---------------------------------------------------------------------------
@@ -200,6 +206,7 @@ async def _stream_with_usage_raw(
                     output_cost=cost["output_cost"],
                     model=model_name,
                 )
+                record_token_usage(int(user_id), int(api_key_id), total_in + total_out)
                 # Increment coding session stats
                 if is_coding_mode and user_id:
                     try:
@@ -264,6 +271,7 @@ async def _stream_with_usage_transform(
                     output_cost=cost["output_cost"],
                     model=model_name,
                 )
+                record_token_usage(int(user_id), int(api_key_id), total_in + total_out)
                 # Increment coding session stats
                 if is_coding_mode and user_id:
                     try:
@@ -592,6 +600,7 @@ async def chat_completions(request: Request):
                     output_cost=cost["output_cost"],
                     model=model_name,
                 )
+                record_token_usage(int(user_id), int(api_key_id), usage["input_tokens"] + usage["output_tokens"])
                 # Increment coding session stats
                 if is_coding and user_id:
                     try:
@@ -720,6 +729,7 @@ async def responses_endpoint(request: Request):
                                 output_cost=cost["output_cost"],
                                 model=model_name,
                             )
+                            record_token_usage(int(user_id), int(api_key_id), _in_t + _out_t)
                 except Exception:
                     logger.exception("Failed to record usage")
 
@@ -834,6 +844,7 @@ async def responses_endpoint(request: Request):
                     output_cost=cost["output_cost"],
                     model=model_name,
                 )
+                record_token_usage(int(user_id), int(api_key_id), usage["input_tokens"] + usage["output_tokens"])
                 # Increment coding session stats
                 if is_coding and user_id:
                     try:
@@ -975,6 +986,7 @@ async def anthropic_messages_endpoint(request: Request):
                     output_cost=cost["output_cost"],
                     model=model_name,
                 )
+                record_token_usage(int(user_id), int(api_key_id), usage["input_tokens"] + usage["output_tokens"])
                 # Increment coding session stats
                 if is_coding and user_id:
                     try:

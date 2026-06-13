@@ -41,8 +41,10 @@ def main():
     # 註冊處理器
     from bot.handlers.user_handlers import register_user_handlers
     from bot.handlers.admin_handlers import register_admin_handlers
+    from bot.handlers.limit_handlers import register_limit_handlers
     register_user_handlers(application)
     register_admin_handlers(application)
+    register_limit_handlers(application)
     logger.info("已註冊所有 Bot 處理器")
 
     # 指令日誌 — group -1 在所有 group 0 handler 之前執行，不會阻擋後續處理
@@ -78,6 +80,7 @@ def main():
             BotCommand("usage", "查詢 Token 用量"),
             BotCommand("coding", "Coding 模式管理（開關/設定）"),
             BotCommand("model_catch", "抓取 API 模型列表"),
+            BotCommand("my_limits", "查看使用限制與配額"),
         ]
         admin_commands = [
             BotCommand("provider", "供應商管理（新增/刪除/編輯/列表）"),
@@ -85,6 +88,7 @@ def main():
             BotCommand("admin_user", "用戶管理（新增/停用/刪除/編輯/移除Key）"),
             BotCommand("sub_url", "修改 API 接口地址"),
             BotCommand("api_test", "測試 API 協議連通性"),
+            BotCommand("limits", "權限管理（用戶組/限制/配額）"),
         ]
         try:
             await application.bot.set_my_commands(user_commands + admin_commands)

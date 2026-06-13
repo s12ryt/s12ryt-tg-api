@@ -102,6 +102,24 @@ CREATE TABLE IF NOT EXISTS model_restrictions (
 );
 """
 
+CREATE_TABLE_USER_GROUPS = """
+CREATE TABLE IF NOT EXISTS user_groups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT UNIQUE NOT NULL,
+    display_name TEXT,
+    rpm_limit INTEGER DEFAULT 0,
+    tpm_limit INTEGER DEFAULT 0,
+    concurrency_limit INTEGER DEFAULT 0,
+    daily_token_limit INTEGER DEFAULT 0,
+    monthly_token_limit INTEGER DEFAULT 0,
+    daily_cost_limit REAL DEFAULT 0,
+    monthly_cost_limit REAL DEFAULT 0,
+    is_default INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+"""
+
 ALL_TABLES = [
     CREATE_TABLE_PROVIDERS,
     CREATE_TABLE_USERS,
@@ -111,4 +129,5 @@ ALL_TABLES = [
     CREATE_TABLE_MODEL_PRICES,
     CREATE_TABLE_CODING_CONFIGS,
     CREATE_TABLE_MODEL_RESTRICTIONS,
+    CREATE_TABLE_USER_GROUPS,
 ]
