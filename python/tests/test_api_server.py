@@ -80,6 +80,21 @@ async def setup_db(_isolate_db):
     return key_record["key"]
 
 
+@pytest.fixture(autouse=True)
+def _bypass_model_restrictions():
+    """Bypass model restrictions for all API server tests.
+
+    Model restriction is deny-by-default: no restriction configured → non-admin
+    gets empty list. Tests don't configure restrictions, so we patch these
+    functions to allow all models.
+    """
+    with patch("db.database.get_allowed_models", new_callable=AsyncMock) as mock_gam, \
+         patch("db.database.check_model_allowed", new_callable=AsyncMock) as mock_cma:
+        mock_gam.side_effect = lambda uid, kid, models, is_admin=False: list(models)
+        mock_cma.return_value = True
+        yield
+
+
 @pytest_asyncio.fixture
 async def client(setup_db):
     """Provide an httpx AsyncClient wired to the FastAPI app (no real HTTP)."""
@@ -213,12 +228,33 @@ class TestModelsEndpoint:
 
     @pytest.mark.asyncio
     async def test_known_models_present(self, client, setup_db):
-        """The static MODEL_REGISTRY includes some well-known model names."""
+        """The /v1/models endpoint returns models from provider cache."""
         key = setup_db
-        resp = await client.get("/v1/models", headers=_auth_header(key))
+        # The provider cache is empty in tests (no providers in DB).
+        # Mock get_provider_cache to return some known models.
+        from db.database import CachedProvider
+        mock_cache = {
+            "gpt-4o": CachedProvider(
+                provider_type="openai_chat",
+                provider_id=1,
+                base_url="https://api.openai.com/v1",
+                api_key="sk-test",
+                input_price=None,
+                output_price=None,
+            ),
+            "claude-3.5-sonnet": CachedProvider(
+                provider_type="anthropic",
+                provider_id=2,
+                base_url="https://api.anthropic.com",
+                api_key="sk-ant-test",
+                input_price=None,
+                output_price=None,
+            ),
+        }
+        with patch("db.database.get_provider_cache", return_value=mock_cache):
+            resp = await client.get("/v1/models", headers=_auth_header(key))
         data = resp.json()
         model_ids = [m["id"] for m in data["data"]]
-        # These are from the static MODEL_REGISTRY in server.py
         assert "gpt-4o" in model_ids
         assert "claude-3.5-sonnet" in model_ids
 
@@ -559,11 +595,12 @@ class TestAnthropicMessagesValidation:
     @pytest.mark.asyncio
     async def test_anthropic_success_non_streaming(self, client, setup_db):
         key = setup_db
-        # The /v1/messages endpoint calls PROVIDER_MODULES["anthropic"] as a
-        # callable directly (module-level), not .chat_completion.  So we mock
-        # the module object itself in the PROVIDER_MODULES registry.
+        # The /v1/messages endpoint calls PROVIDER_MODULES["anthropic"].chat_completion(body, config)
+        # via _dispatch_with_fallback. We need a module-like mock with a .chat_completion attribute.
         from api.server import PROVIDER_MODULES
-        mock_provider = AsyncMock(return_value=FAKE_CHAT_RESPONSE)
+        from unittest.mock import MagicMock
+        mock_provider = MagicMock()
+        mock_provider.chat_completion = AsyncMock(return_value=FAKE_CHAT_RESPONSE)
         with patch.dict(PROVIDER_MODULES, {"anthropic": mock_provider}):
             resp = await client.post(
                 "/v1/messages",

@@ -56,7 +56,7 @@ class TestProviders:
     async def test_add_provider(self, db_conn):
         result = await database.add_provider(
             name="openai-main",
-            api_type="openai",
+            api_type="openai_chat",
             base_url="https://api.openai.com",
             api_key="sk-test123",
             models="gpt-4,gpt-3.5",
@@ -65,7 +65,7 @@ class TestProviders:
         )
         assert result is not None
         assert result["name"] == "openai-main"
-        assert result["api_type"] == "openai"
+        assert result["api_type"] == "openai_chat"
         assert result["base_url"] == "https://api.openai.com"
         assert result["api_key"] == "sk-test123"
         assert result["models"] == "gpt-4,gpt-3.5"
@@ -76,16 +76,16 @@ class TestProviders:
     @pytest.mark.asyncio
     async def test_add_provider_duplicate_name(self, db_conn):
         await database.add_provider(
-            name="dup", api_type="openai", base_url="https://a.com", api_key="k"
+            name="dup", api_type="openai_chat", base_url="https://a.com", api_key="k"
         )
         result = await database.add_provider(
-            name="dup", api_type="openai", base_url="https://b.com", api_key="k2"
+            name="dup", api_type="openai_chat", base_url="https://b.com", api_key="k2"
         )
         assert result is None
 
     @pytest.mark.asyncio
     async def test_get_providers(self, db_conn):
-        await database.add_provider("p1", "openai", "https://a.com", "k1")
+        await database.add_provider("p1", "openai_chat", "https://a.com", "k1")
         await database.add_provider("p2", "anthropic", "https://b.com", "k2")
         providers = await database.get_providers()
         assert len(providers) == 2
@@ -94,7 +94,7 @@ class TestProviders:
 
     @pytest.mark.asyncio
     async def test_get_providers_enabled_only(self, db_conn):
-        await database.add_provider("enabled", "openai", "https://a.com", "k1")
+        await database.add_provider("enabled", "openai_chat", "https://a.com", "k1")
         await database.add_provider("disabled", "anthropic", "https://b.com", "k2")
         await database.update_provider(2, enabled=0)
         providers = await database.get_providers(enabled_only=True)
@@ -116,7 +116,7 @@ class TestProviders:
 
     @pytest.mark.asyncio
     async def test_update_provider(self, db_conn):
-        await database.add_provider("orig", "openai", "https://a.com", "k1")
+        await database.add_provider("orig", "openai_chat", "https://a.com", "k1")
         updated = await database.update_provider(1, name="renamed", enabled=0)
         assert updated is not None
         assert updated["name"] == "renamed"
@@ -124,14 +124,14 @@ class TestProviders:
 
     @pytest.mark.asyncio
     async def test_update_provider_no_fields(self, db_conn):
-        await database.add_provider("orig", "openai", "https://a.com", "k1")
+        await database.add_provider("orig", "openai_chat", "https://a.com", "k1")
         updated = await database.update_provider(1)
         assert updated is not None
         assert updated["name"] == "orig"
 
     @pytest.mark.asyncio
     async def test_delete_provider(self, db_conn):
-        await database.add_provider("to-delete", "openai", "https://a.com", "k1")
+        await database.add_provider("to-delete", "openai_chat", "https://a.com", "k1")
         assert await database.delete_provider(1) is True
         assert await database.get_provider_by_id(1) is None
 
@@ -302,7 +302,7 @@ class TestUsage:
     async def _setup_provider_and_key(self):
         """Helper: create a provider and API key, return (provider_id, api_key_id)."""
         provider = await database.add_provider(
-            "test-prov", "openai", "https://a.com", "pk"
+            "test-prov", "openai_chat", "https://a.com", "pk"
         )
         key = await database.add_api_key(2001)
         return provider["id"], key["id"]

@@ -378,6 +378,7 @@ let allProvidersCache: Provider[] | null = null;
  * Called on init and after any provider add/update/delete.
  */
 export function rebuildProviderCache(): void {
+  if (!db) return; // Guard: skip if DB not initialized (e.g. during test teardown)
   const newCache = new Map<string, CachedProvider>();
   const providers = queryAll("SELECT * FROM providers WHERE enabled = 1 ORDER BY id");
 

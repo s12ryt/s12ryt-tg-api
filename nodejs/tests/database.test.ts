@@ -39,6 +39,7 @@ import {
   getAllKeys,
   // Usage CRUD
   recordUsage,
+  flushUsageQueue,
   getUsageByUser,
   getUsageByProvider,
   getTotalUsage,
@@ -104,7 +105,7 @@ describe("Provider CRUD", () => {
   it("should add a provider and retrieve it", () => {
     addProvider({
       name: "OpenAI",
-      api_type: "openai",
+      api_type: "openai_chat",
       base_url: "https://api.openai.com/v1",
       api_key: "sk-test-key",
       models: "gpt-4o,gpt-4o-mini",
@@ -115,7 +116,7 @@ describe("Provider CRUD", () => {
     const providers = getProviders();
     expect(providers).toHaveLength(1);
     expect(providers[0].name).toBe("OpenAI");
-    expect(providers[0].api_type).toBe("openai");
+    expect(providers[0].api_type).toBe("openai_chat");
     expect(providers[0].base_url).toBe("https://api.openai.com/v1");
     expect(providers[0].api_key).toBe("sk-test-key");
     expect(providers[0].models).toBe("gpt-4o,gpt-4o-mini");
@@ -127,7 +128,7 @@ describe("Provider CRUD", () => {
   it("should reject duplicate provider name", () => {
     addProvider({
       name: "OpenAI",
-      api_type: "openai",
+      api_type: "openai_chat",
       base_url: "https://api.openai.com/v1",
       api_key: "sk-key1",
       models: "gpt-4o",
@@ -138,7 +139,7 @@ describe("Provider CRUD", () => {
     expect(() =>
       addProvider({
         name: "OpenAI",
-        api_type: "openai",
+        api_type: "openai_chat",
         base_url: "https://api.openai.com/v2",
         api_key: "sk-key2",
         models: "gpt-4o",
@@ -193,7 +194,7 @@ describe("Provider CRUD", () => {
   it("should throw when updating with no fields", () => {
     addProvider({
       name: "OpenAI",
-      api_type: "openai",
+      api_type: "openai_chat",
       base_url: "https://api.openai.com/v1",
       api_key: "sk-key",
       models: "gpt-4o",
@@ -207,7 +208,7 @@ describe("Provider CRUD", () => {
   it("should delete a provider by id", () => {
     addProvider({
       name: "OpenAI",
-      api_type: "openai",
+      api_type: "openai_chat",
       base_url: "https://api.openai.com/v1",
       api_key: "sk-key",
       models: "gpt-4o",
@@ -232,9 +233,9 @@ describe("Provider CRUD", () => {
   });
 
   it("should delete multiple providers", () => {
-    addProvider({ name: "P1", api_type: "openai", base_url: "https://p1", api_key: "k1", models: "", input_price: null, output_price: null });
-    addProvider({ name: "P2", api_type: "openai", base_url: "https://p2", api_key: "k2", models: "", input_price: null, output_price: null });
-    addProvider({ name: "P3", api_type: "openai", base_url: "https://p3", api_key: "k3", models: "", input_price: null, output_price: null });
+    addProvider({ name: "P1", api_type: "openai_chat", base_url: "https://p1", api_key: "k1", models: "", input_price: null, output_price: null });
+    addProvider({ name: "P2", api_type: "openai_chat", base_url: "https://p2", api_key: "k2", models: "", input_price: null, output_price: null });
+    addProvider({ name: "P3", api_type: "openai_chat", base_url: "https://p3", api_key: "k3", models: "", input_price: null, output_price: null });
 
     deleteProvider([1, 3]);
 
@@ -244,8 +245,8 @@ describe("Provider CRUD", () => {
   });
 
   it("should filter providers by enabled status", () => {
-    addProvider({ name: "Enabled1", api_type: "openai", base_url: "https://e1", api_key: "k1", models: "", input_price: null, output_price: null });
-    addProvider({ name: "Disabled1", api_type: "openai", base_url: "https://d1", api_key: "k2", models: "", input_price: null, output_price: null });
+    addProvider({ name: "Enabled1", api_type: "openai_chat", base_url: "https://e1", api_key: "k1", models: "", input_price: null, output_price: null });
+    addProvider({ name: "Disabled1", api_type: "openai_chat", base_url: "https://d1", api_key: "k2", models: "", input_price: null, output_price: null });
 
     updateProvider(2, { enabled: 0 });
 
@@ -479,7 +480,7 @@ describe("Usage CRUD", () => {
     addUser(11111, "usageUser");
     addProvider({
       name: "TestProvider",
-      api_type: "openai",
+      api_type: "openai_chat",
       base_url: "https://test",
       api_key: "test-key",
       models: "gpt-4o",
@@ -500,6 +501,7 @@ describe("Usage CRUD", () => {
 
   it("should record usage", () => {
     recordUsage(apiKeyId, providerId, 100, 50, 0.5, 0.75, "gpt-4o");
+    flushUsageQueue();
 
     const usage = getUsageByUser(11111);
     expect(usage).toHaveLength(1);
@@ -513,6 +515,7 @@ describe("Usage CRUD", () => {
 
   it("should get usage by provider", () => {
     recordUsage(apiKeyId, providerId, 200, 100, 1.0, 1.5, "gpt-4o");
+    flushUsageQueue();
 
     const usage = getUsageByProvider(providerId);
     expect(usage).toHaveLength(1);
@@ -554,6 +557,7 @@ describe("Usage CRUD", () => {
   it("should calculate total usage correctly", () => {
     recordUsage(apiKeyId, providerId, 100, 50, 0.5, 0.75, "gpt-4o");
     recordUsage(apiKeyId, providerId, 200, 100, 1.0, 1.5, "gpt-4o-mini");
+    flushUsageQueue();
 
     const total = getTotalUsage();
     expect(total.total_input_tokens).toBe(300);

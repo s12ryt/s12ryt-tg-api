@@ -5,7 +5,7 @@ import logging
 import os
 import time
 from collections import OrderedDict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -108,7 +108,7 @@ async def rebuild_provider_cache() -> None:
             pass
 
 
-_on_cache_rebuild_callbacks: list[Any] = field(default_factory=list)
+_on_cache_rebuild_callbacks: list[Any] = []
 
 
 def on_provider_cache_rebuild(callback) -> None:

@@ -41,12 +41,31 @@ const { mockChatCompletion, VALID_KEY, INACTIVE_USER_KEY } = vi.hoisted(() => {
 // ---------------------------------------------------------------------------
 
 vi.mock("../src/db/database.js", () => {
+  const MOCK_OPENAI_PROVIDER = {
+    providerType: "openai_chat",
+    providerId: 1,
+    providerName: "Test OpenAI",
+    baseUrl: "https://api.openai.com/v1",
+    apiKey: "test-key",
+    inputPrice: 0.005,
+    outputPrice: 0.015,
+  };
+  const MOCK_ANTHROPIC_PROVIDER = {
+    providerType: "anthropic",
+    providerId: 2,
+    providerName: "Test Anthropic",
+    baseUrl: "https://api.anthropic.com/v1",
+    apiKey: "test-key",
+    inputPrice: 0.003,
+    outputPrice: 0.015,
+  };
+
   return {
     getProviders: vi.fn((_enabledOnly?: boolean) => [
       {
         id: 1,
         name: "Test OpenAI",
-        api_type: "openai",
+        api_type: "openai_chat",
         base_url: "https://api.openai.com/v1",
         api_key: "test-key",
         models: "gpt-4o, gpt-4o-mini",
@@ -114,8 +133,49 @@ vi.mock("../src/db/database.js", () => {
     }),
     recordUsage: vi.fn(),
     initDbAsync: vi.fn(() => Promise.resolve({})),
+    onProviderCacheRebuild: vi.fn(),
+    rebuildProviderCache: vi.fn(),
+    getAllowedModels: vi.fn((_userId: number, _apiKeyId: number | null, allModelNames: string[], _isAdmin: boolean) => {
+      return allModelNames;
+    }),
+    checkModelAllowed: vi.fn((_userId: number, _apiKeyId: number | null, _modelName: string, _isAdmin: boolean) => {
+      return true;
+    }),
+    lookupApiKeyCached: vi.fn((token: string) => {
+      if (token === "sk-s12ryt-valid-test-key") {
+        return { apiKeyId: 1, userId: 1, tgUserId: 99999, is_active: true, user_is_active: true };
+      }
+      // Real lookupApiKeyCached returns null when user_is_active is false (checked at DB layer)
+      if (token === "sk-s12ryt-inactive-user-key") {
+        return null;
+      }
+      return null;
+    }),
+    lookupModelCached: vi.fn((modelName: string) => {
+      if (modelName === "gpt-4o" || modelName === "gpt-4o-mini") {
+        return MOCK_OPENAI_PROVIDER;
+      }
+      if (modelName === "claude-3.5-sonnet" || modelName === "claude-3-haiku") {
+        return MOCK_ANTHROPIC_PROVIDER;
+      }
+      return undefined;
+    }),
+    getAllCachedModelNames: vi.fn(() => ["gpt-4o", "gpt-4o-mini", "claude-3.5-sonnet", "claude-3-haiku"]),
+    getUserByTgId: vi.fn(() => undefined),
+    getActiveCodingForApiKey: vi.fn(() => null),
+    incrementCodingSessionStats: vi.fn(),
   };
 });
+
+// ---------------------------------------------------------------------------
+// Mock: keySelector.js  (used by server.ts for multi-key selection)
+// ---------------------------------------------------------------------------
+
+vi.mock("../src/api/keySelector.js", () => ({
+  selectKey: vi.fn((_providerId: number, apiKey: string) => ({ key: apiKey, keyIndex: null })),
+  reportSuccess: vi.fn(),
+  reportFailure: vi.fn(),
+}));
 
 // ---------------------------------------------------------------------------
 // Mock: provider modules  (all share the same mockChatCompletion)
@@ -123,6 +183,26 @@ vi.mock("../src/db/database.js", () => {
 
 vi.mock("../src/api/providers/openai.js", () => ({
   chatCompletion: mockChatCompletion,
+}));
+
+vi.mock("../src/api/providers/openaiResponse.js", () => ({
+  chatCompletion: mockChatCompletion,
+  responsesApi: vi.fn(() =>
+    Promise.resolve({
+      id: "resp-test123",
+      object: "response",
+      status: "completed",
+      model: "gpt-4o",
+      output: [
+        {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "Hello from mock!" }],
+        },
+      ],
+      usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+    }),
+  ),
 }));
 
 vi.mock("../src/api/providers/anthropic.js", () => ({
