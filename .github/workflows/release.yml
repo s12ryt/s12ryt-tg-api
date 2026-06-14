@@ -1,0 +1,186 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v[0-9]+.[0-9]+.[0-9]+*']
+  workflow_dispatch:
+    inputs:
+      type:
+        description: 'Release type (latest or tag)'
+        required: true
+        default: 'latest'
+        type: choice
+        options:
+          - latest
+          - tag
+
+permissions:
+  contents: write
+
+env:
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+jobs:
+  # ============================================================
+  # Job 1: Push to main -> 更新 "latest" 預發布 Release
+  # ============================================================
+  latest-release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 需要完整歷史來取得 tag 資訊
+
+      - name: Gather version info
+        id: ver
+        run: |
+          # 取得最近的 SemVer tag
+          LATEST_TAG=$(git describe --tags --match "v[0-9]*.[0-9]*.[0-9]*" --abbrev=0 2>/dev/null || echo "")
+          
+          if [ -n "$LATEST_TAG" ]; then
+            COMMITS_SINCE=$(git rev-list "${LATEST_TAG}..HEAD" --count 2>/dev/null || echo "0")
+          else
+            LATEST_TAG="v0.0.0"
+            COMMITS_SINCE=$(git rev-list --count HEAD 2>/dev/null || echo "0")
+          fi
+          
+          SHORT_HASH=$(git rev-parse --short HEAD)
+          COMMIT_DATE=$(git log -1 --format=%cI HEAD)
+          
+          # 版本號格式: v1.2.0-dev.5+abc1234
+          if [ "$COMMITS_SINCE" -gt 0 ]; then
+            VERSION="${LATEST_TAG}-dev.${COMMITS_SINCE}+${SHORT_HASH}"
+          else
+            VERSION="${LATEST_TAG}"
+          fi
+          
+          echo "latest_tag=${LATEST_TAG}" >> "$GITHUB_OUTPUT"
+          echo "commits_since=${COMMITS_SINCE}" >> "$GITHUB_OUTPUT"
+          echo "short_hash=${SHORT_HASH}" >> "$GITHUB_OUTPUT"
+          echo "commit_date=${COMMIT_DATE}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate changelog
+        id: log
+        run: |
+          LATEST_TAG="${{ steps.ver.outputs.latest_tag }}"
+          
+          if [ "$LATEST_TAG" != "v0.0.0" ]; then
+            CHANGELOG=$(git log "${LATEST_TAG}..HEAD" --pretty=format:"- %s (%h)" --no-merges 2>/dev/null || echo "")
+          else
+            CHANGELOG=$(git log --pretty=format:"- %s (%h)" --no-merges -20 2>/dev/null || echo "")
+          fi
+          
+          # 如果沒有 changelog，放一個預設訊息
+          if [ -z "$CHANGELOG" ]; then
+            CHANGELOG="- No changes"
+          fi
+          
+          # 使用 EOF 分隔符處理多行
+          echo "changelog<<CHANGELOG_EOF" >> "$GITHUB_OUTPUT"
+          echo "$CHANGELOG" >> "$GITHUB_OUTPUT"
+          echo "CHANGELOG_EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Delete old latest release
+        run: |
+          gh release delete latest --yes --cleanup-tag 2>/dev/null || true
+
+      - name: Create latest pre-release
+        run: |
+          gh release create latest \
+            --title "🔧 Latest Build (${{ steps.ver.outputs.short_hash }})" \
+            --notes "$(cat <<'RELEASE_NOTES'
+          ## 📦 版本: ${{ steps.ver.outputs.version }}
+
+          | 項目 | 值 |
+          |------|-----|
+          | **Commit** | \`${{ steps.ver.outputs.short_hash }}\` |
+          | **日期** | ${{ steps.ver.outputs.commit_date }} |
+          | **基於 Release** | ${{ steps.ver.outputs.latest_tag }} |
+          | **領先提交數** | ${{ steps.ver.outputs.commits_since }} |
+
+          ### 📝 變更內容
+
+          ${{ steps.log.outputs.changelog }}
+
+          ---
+          > 這是開發版本 (pre-release)，包含 main 分支最新提交。
+          > 使用 \`/update\` 指令更新到此版本。
+          RELEASE_NOTES
+          )" \
+            --prerelease \
+            --target main
+
+  # ============================================================
+  # Job 2: Tag push (v*.*.*) -> 建立正式 Release
+  # ============================================================
+  tagged-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get tag info
+        id: tag
+        run: |
+          CURRENT_TAG="${GITHUB_REF#refs/tags/}"
+          
+          # 取得前一個 tag
+          PREV_TAG=$(git describe --tags --abbrev=0 "${CURRENT_TAG}^" 2>/dev/null || echo "")
+          
+          # 取得 tag 日期
+          TAG_DATE=$(git log -1 --format=%cI "${CURRENT_TAG}")
+          
+          echo "current=${CURRENT_TAG}" >> "$GITHUB_OUTPUT"
+          echo "previous=${PREV_TAG}" >> "$GITHUB_OUTPUT"
+          echo "date=${TAG_DATE}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate release notes
+        id: notes
+        run: |
+          CURRENT="${{ steps.tag.outputs.current }}"
+          PREVIOUS="${{ steps.tag.outputs.previous }}"
+          
+          if [ -n "$PREVIOUS" ]; then
+            CHANGELOG=$(git log "${PREVIOUS}..${CURRENT}" --pretty=format:"- %s (%h)" --no-merges 2>/dev/null || echo "")
+            RANGE_TEXT="自 ${PREVIOUS} 以來的變更"
+          else
+            CHANGELOG=$(git log --pretty=format:"- %s (%h)" --no-merges -30 2>/dev/null || echo "")
+            RANGE_TEXT="初始版本"
+          fi
+          
+          if [ -z "$CHANGELOG" ]; then
+            CHANGELOG="- No changes"
+          fi
+          
+          echo "range_text=${RANGE_TEXT}" >> "$GITHUB_OUTPUT"
+          echo "changelog<<CHANGELOG_EOF" >> "$GITHUB_OUTPUT"
+          echo "$CHANGELOG" >> "$GITHUB_OUTPUT"
+          echo "CHANGELOG_EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Create stable release
+        run: |
+          gh release create "${{ steps.tag.outputs.current }}" \
+            --title "${{ steps.tag.outputs.current }}" \
+            --notes "$(cat <<'RELEASE_NOTES'
+          ## 🎉 ${{ steps.tag.outputs.current }}
+
+          **發布日期：** ${{ steps.tag.outputs.date }}
+
+          ### 📝 ${{ steps.notes.outputs.range_text }}
+
+          ${{ steps.notes.outputs.changelog }}
+
+          ---
+          > 這是穩定版本 (stable release)。
+          > 使用 \`/update\` 指令更新到此版本。
+          RELEASE_NOTES
+          )" \
+            --latest \
+            --target main

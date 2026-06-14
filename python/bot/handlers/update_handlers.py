@@ -33,6 +33,8 @@ logger = logging.getLogger(__name__)
 
 def _format_date(iso_date: str) -> str:
     """格式化日期顯示"""
+    if not iso_date:
+        return "—"
     try:
         from datetime import datetime
         dt = datetime.fromisoformat(iso_date)
@@ -50,8 +52,10 @@ async def version_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     """Show current program version."""
     try:
         version = get_current_version()
+        tag_line = f"🏷️ Release：`{version.tag}`\n" if version.tag else ""
         await update.message.reply_text(
             f"📦 *目前版本*\n\n"
+            f"{tag_line}"
             f"🔖 Commit：`{version.hash}`\n"
             f"📝 訊息：{version.message}\n"
             f"🕐 時間：{_format_date(version.date)}",
@@ -69,14 +73,16 @@ async def version_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def update_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Check for updates and show confirmation inline keyboard."""
     try:
-        await update.message.reply_text("⏳ 正在檢查遠端更新...")
+        await update.message.reply_text("⏳ 正在檢查更新...")
 
         result = fetch_and_check_update()
 
         if not result.has_update:
+            tag_line = f"🏷️ Release：`{result.current.tag}`\n" if result.current.tag else ""
             await update.message.reply_text(
                 f"✅ 已是最新版本！\n\n"
-                f"🔖 當前：`{result.current.hash}`\n"
+                f"{tag_line}"
+                f"🔖 Commit：`{result.current.hash}`\n"
                 f"📝 {result.current.message}\n"
                 f"🕐 {_format_date(result.current.date)}",
                 parse_mode="Markdown",
@@ -84,29 +90,42 @@ async def update_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return
 
         # 有更新可用
+        tag_line = f"🏷️ `{result.current.tag}`\n" if result.current.tag else ""
         msg = (
             f"🔄 *有新版本可用！*\n\n"
             f"📍 *當前版本*\n"
+            f"{tag_line}"
             f"🔖 `{result.current.hash}`\n"
             f"📝 {result.current.message}\n"
             f"🕐 {_format_date(result.current.date)}\n\n"
-            f"🆕 *最新版本*\n"
-            f"🔖 `{result.latest.hash}`\n"
-            f"📝 {result.latest.message}\n"
-            f"🕐 {_format_date(result.latest.date)}\n\n"
-            f"📊 落後 {result.commits_behind} 個提交\n"
         )
 
-        # 顯示最多 10 條新 commit
-        if result.new_commits:
+        # 顯示 GitHub Release 資訊
+        if result.latest_release:
+            rel = result.latest_release
+            pre_label = " *(預發布)*" if rel.prerelease else " *(穩定版)*"
+            msg += (
+                f"🆕 *GitHub 最新 Release*\n"
+                f"🏷️ `{rel.tag}`{pre_label}\n"
+                f"📝 {rel.name}\n"
+                f"🕐 {_format_date(rel.published_at)}\n"
+            )
+            if result.current.tag and rel.tag:
+                msg += f"🔗 [查看 Release]({rel.html_url})\n"
+            msg += "\n"
+
+        # 顯示落後 commit 數量
+        if result.commits_behind > 0:
+            msg += f"📊 落後 {result.commits_behind} 個提交\n"
             display = result.new_commits[:10]
-            msg += f"\n📜 *新增提交：*\n{chr(10).join(display)}"
-            if len(result.new_commits) > 10:
-                msg += f"\n... 還有 {len(result.new_commits) - 10} 條"
+            if display:
+                msg += f"\n📜 *新增提交：*\n{chr(10).join(display)}"
+                if len(result.new_commits) > 10:
+                    msg += f"\n... 還有 {len(result.new_commits) - 10} 條"
 
         # 檢查工作目錄
         if not is_working_dir_clean():
-            msg += "\n\n⚠️ *警告：工作目錄有未提交的更改，更新可能會失敗！*"
+            msg += "\n\n⚠️ *警告：工作目錄有未提交的更改！*\n更新將改用 tarball 下載方式。"
 
         keyboard = InlineKeyboardMarkup([
             [
@@ -153,13 +172,18 @@ async def handle_update_confirm(update: Update, context: ContextTypes.DEFAULT_TY
         return
     try:
         await query.answer()
-        await query.edit_message_text("⏳ 正在更新程式碼...")
+        await query.edit_message_text(
+            "⏳ 正在更新程式碼...\n\n嘗試 git pull，失敗則改用 tarball 下載。"
+        )
 
         result = perform_update()
 
         if result.success:
+            method_text = "📦 tarball 下載" if result.method == "tarball" else "📥 git pull"
             await query.edit_message_text(
-                f"✅ {result.message}\n\n🔄 正在重啟進程...\nBot 將在 2 秒後重新上線。"
+                f"✅ {result.message}\n\n"
+                f"🔧 更新方式：{method_text}\n\n"
+                f"🔄 正在重啟進程...\nBot 將在 2 秒後重新上線。"
             )
             logger.info("[update] 更新成功，正在重啟...")
             await restart_process(2.0)

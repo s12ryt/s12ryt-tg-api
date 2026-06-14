@@ -1,6 +1,6 @@
 /**
  * /version  — 查看當前程式版本
- * /update   — 檢查更新 + 確認後執行 git pull + 重啟
+ * /update   — 檢查更新 + 確認後執行更新（git pull → tarball 備援）+ 重啟
  * /restart  — 立即重啟進程
  *
  * 以上指令僅限管理員使用。
@@ -26,6 +26,7 @@ type MyContext = Context & ConversationFlavor;
 
 /** 格式化日期顯示 */
 function formatDate(isoDate: string): string {
+  if (!isoDate) return "—";
   try {
     const d = new Date(isoDate);
     return d.toLocaleString("zh-TW", { timeZone: "Asia/Taipei" });
@@ -43,6 +44,7 @@ async function versionCommand(ctx: MyContext): Promise<void> {
     const version = getCurrentVersion();
     await ctx.reply(
       `📦 *目前版本*\n\n` +
+      (version.tag ? `🏷️ Release：\`${version.tag}\`\n` : "") +
       `🔖 Commit：\`${version.hash}\`\n` +
       `📝 訊息：${version.message}\n` +
       `🕐 時間：${formatDate(version.date)}`,
@@ -59,14 +61,15 @@ async function versionCommand(ctx: MyContext): Promise<void> {
 
 async function updateCommand(ctx: MyContext): Promise<void> {
   try {
-    await ctx.reply("⏳ 正在檢查遠端更新...");
+    await ctx.reply("⏳ 正在檢查更新...");
 
-    const result = fetchAndCheckUpdate();
+    const result = await fetchAndCheckUpdate();
 
     if (!result.hasUpdate) {
       await ctx.reply(
         `✅ 已是最新版本！\n\n` +
-        `🔖 當前：\`${result.current.hash}\`\n` +
+        (result.current.tag ? `🏷️ Release：\`${result.current.tag}\`\n` : "") +
+        `🔖 Commit：\`${result.current.hash}\`\n` +
         `📝 ${result.current.message}\n` +
         `🕐 ${formatDate(result.current.date)}`,
         { parse_mode: "Markdown" },
@@ -78,28 +81,42 @@ async function updateCommand(ctx: MyContext): Promise<void> {
     let msg =
       `🔄 *有新版本可用！*\n\n` +
       `📍 *當前版本*\n` +
+      (result.current.tag ? `🏷️ \`${result.current.tag}\`\n` : "") +
       `🔖 \`${result.current.hash}\`\n` +
       `📝 ${result.current.message}\n` +
-      `🕐 ${formatDate(result.current.date)}\n\n` +
-      `🆕 *最新版本*\n` +
-      `🔖 \`${result.latest.hash}\`\n` +
-      `📝 ${result.latest.message}\n` +
-      `🕐 ${formatDate(result.latest.date)}\n\n` +
-      `📊 落後 ${result.commitsBehind} 個提交\n`;
+      `🕐 ${formatDate(result.current.date)}\n\n`;
 
-    // 顯示最多 10 條新 commit
-    if (result.newCommits.length > 0) {
+    // 顯示 GitHub Release 資訊
+    if (result.latestRelease) {
+      msg +=
+        `🆕 *GitHub 最新 Release*\n` +
+        `🏷️ \`${result.latestRelease.tag}\`` +
+        (result.latestRelease.prerelease ? " *(預發布)*" : " *(穩定版)*") + `\n` +
+        `📝 ${result.latestRelease.name}\n` +
+        `🕐 ${formatDate(result.latestRelease.publishedAt)}\n`;
+
+      if (result.current.tag && result.latestRelease.tag) {
+        msg += `🔗 [查看 Release](${result.latestRelease.htmlUrl})\n`;
+      }
+      msg += "\n";
+    }
+
+    // 顯示落後 commit 數量
+    if (result.commitsBehind > 0) {
+      msg += `📊 落後 ${result.commitsBehind} 個提交\n`;
       const display = result.newCommits.slice(0, 10);
-      msg += `\n📜 *新增提交：*\n${display.join("\n")}`;
-      if (result.newCommits.length > 10) {
-        msg += `\n... 還有 ${result.newCommits.length - 10} 條`;
+      if (display.length > 0) {
+        msg += `\n📜 *新增提交：*\n${display.join("\n")}`;
+        if (result.newCommits.length > 10) {
+          msg += `\n... 還有 ${result.newCommits.length - 10} 條`;
+        }
       }
     }
 
     // 檢查工作目錄
     const clean = isWorkingDirClean();
     if (!clean) {
-      msg += "\n\n⚠️ *警告：工作目錄有未提交的更改，更新可能會失敗！*";
+      msg += "\n\n⚠️ *警告：工作目錄有未提交的更改！*\n更新將改用 tarball 下載方式。";
     }
 
     const keyboard = new InlineKeyboard()
@@ -136,13 +153,18 @@ async function restartCommand(ctx: MyContext): Promise<void> {
 async function handleUpdateConfirm(ctx: MyContext): Promise<void> {
   try {
     await ctx.answerCallbackQuery();
-    await ctx.editMessageText("⏳ 正在更新程式碼...");
+    await ctx.editMessageText(
+      "⏳ 正在更新程式碼...\n\n嘗試 git pull，失敗則改用 tarball 下載。",
+    );
 
-    const result = performUpdate();
+    const result = await performUpdate();
 
     if (result.success) {
+      const methodText = result.method === "tarball" ? "📦 tarball 下載" : "📥 git pull";
       await ctx.editMessageText(
-        `✅ ${result.message}\n\n🔄 正在重啟進程...\nBot 將在 2 秒後重新上線。`,
+        `✅ ${result.message}\n\n` +
+        `🔧 更新方式：${methodText}\n\n` +
+        `🔄 正在重啟進程...\nBot 將在 2 秒後重新上線。`,
       );
 
       console.log("[update] 更新成功，正在重啟...");
