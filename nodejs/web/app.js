@@ -1796,16 +1796,18 @@
         const data = await API.post("/web/api/admin/api-test", {
           baseUrl, apiKey: apiKey || undefined,
         });
-        const det = data.detection || data;
+        const det = data.result || data;
         const protos = Object.entries(det.protocols || {});
 
-        let html = '<div class="card"><div class="card-title">偵測結果</div>';
+        let html = `<div class="card"><div class="card-title">${ic.flask} 偵測結果</div>`;
         if (data.allUnreachable) {
-          html += '<div class="empty-state"><div class="icon">${ic.alert}</div><div class="title">所有端點無法連通</div><p>請檢查 URL 是否正確，或網路是否通暢</p></div>';
+          html += `<div class="empty-state"><div class="icon">${ic.alert}</div><div class="title">所有端點無法連通</div><p>請檢查 URL 是否正確，或網路是否通暢</p></div>`;
         } else {
           html += '<table class="table"><thead><tr><th>協議</th><th>支援</th><th>信心等級</th><th>說明</th></tr></thead><tbody>';
           for (const [proto, info] of protos) {
-            const supportIcon = info.supported ? '<span class="badge badge-success">${ic.check} 支援</span>' : '<span class="badge badge-danger">${ic.x} 不支援</span>';
+            const supportIcon = info.supported
+              ? `<span class="badge badge-success">${ic.check} 支援</span>`
+              : `<span class="badge badge-danger">${ic.x} 不支援</span>`;
             const confClass = info.confidence === "high" ? "badge-success" : (info.confidence === "medium" ? "badge-warning" : "badge-muted");
             html += `<tr><td><strong>${esc(proto)}</strong></td><td>${supportIcon}</td><td><span class="badge ${confClass}">${esc(info.confidence || "low")}</span></td><td style="font-size:12px;">${esc(info.reason || "")}</td></tr>`;
           }
