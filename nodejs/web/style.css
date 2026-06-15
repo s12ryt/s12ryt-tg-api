@@ -307,6 +307,8 @@ body {
 .card-title svg { width: 18px; height: 18px; flex-shrink: 0; }
 
 /* --- Inline SVG Sizing --- */
+/* Global fallback: any SVG not matched by a specific rule below inherits text size */
+svg { width: 1em; height: 1em; vertical-align: -0.125em; flex-shrink: 0; }
 .btn svg, .btn-sm svg { width: 15px; height: 15px; vertical-align: -2px; flex-shrink: 0; }
 .badge svg { width: 12px; height: 12px; vertical-align: -1px; }
 .copy-btn svg { width: 14px; height: 14px; vertical-align: -2px; }
