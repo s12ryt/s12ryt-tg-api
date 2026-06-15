@@ -1,8 +1,8 @@
 # s12ryt-tg-api
 
-透過 Telegram Bot 管理多個 AI API 供應商的聚合代理服務。支援 OpenAI、Anthropic、Google 等供應商，並對外提供統一的 OpenAI 相容 API 端點，讓你能用一套 API 金鑰存取所有 AI 模型。
+透過 Telegram Bot 和 Web 控制台管理多個 AI API 供應商的聚合代理服務。支援 OpenAI、Anthropic、Google 等供應商，並對外提供統一的 OpenAI 相容 API 端點，讓你能用一套 API 金鑰存取所有 AI 模型。
 
-提供 **Python** 和 **Node.js** 兩種實作版本。
+提供 **Python** 和 **Node.js** 兩種實作版本（Web 控制台目前僅 Node.js 版本支援）。
 
 ## 特色
 
@@ -29,7 +29,8 @@
 - **API Key 認證** — `sk-s12ryt-{uuid-v7}` 格式，時間排序、唯一性保證
 
 ### 管理
-- **Telegram Bot 管理** — 所有操作透過 Telegram Bot 完成，無需 Web 後台
+- **Telegram Bot 管理** — 所有操作透過 Telegram Bot 完成
+- **Web 控制台**（僅 Node.js）— 瀏覽器版管理面板，功能比 Bot 指令更完整直觀，OTP 一次性登入 + Session 認證
 - **指令統合設計** — 選單式多輪對話，少量指令完成所有操作
 - **模型抓取** — `/model_catch` 指令可抓取任意 API 的模型列表
 - **內置更新系統** — `/update` 指令直接從 GitHub Release 更新程式（git pull + tarball 備援）
@@ -48,18 +49,18 @@
 ## 架構
 
 ```
-┌──────────────┐     ┌───────────────┐     ┌───────────┐     ┌──────────────────┐     ┌──────────────────┐
-│  Telegram    │────▶│  Bot Handlers │────▶│ SQLite DB │     │  API Proxy       │────▶│  AI Providers    │
-│  User / Admin│     │  (指令處理)    │     │           │     │  (/v1/chat/...)  │     │                  │
-└──────────────┘     └───────────────┘     └─────┬─────┘     └────────┬─────────┘     ├──────────────────┤
-                           ▲                     │                    │               │  OpenAI Chat     │
-                           │                     └────────────────────┘               ├──────────────────┤
-                           │                     (API Key 驗證 & 用量記錄)              │  OpenAI Response │
-                           └──────────────────────────────────────────────────────────├──────────────────┤
-                                                                                       │  Anthropic       │
-                                                                                       ├──────────────────┤
-                                                                                       │  Google          │
-                                                                                       └──────────────────┘
+┌──────────────┐                                                       ┌──────────────────┐
+│  Telegram    │──▶ Bot Handlers ────┐                                 │  AI Providers    │
+│  User / Admin│                     │                                 │                  │
+└──────────────┘                     ├──▶ SQLite DB ◀──▶ API Proxy ──▶ ├──────────────────┤
+                                      │                     (/v1/chat/...)│  OpenAI Chat     │
+┌──────────────┐                     │        (API Key 驗證 & 用量記錄) ├──────────────────┤
+│  Web 瀏覽器   │──▶ Web Routes ─────┘                                 │  OpenAI Response │
+│  (控制台)     │    OTP + Session 認證                                ├──────────────────┤
+└──────────────┘    (/web)                                            │  Anthropic       │
+                                                                     ├──────────────────┤
+                                                                     │  Google          │
+                                                                     └──────────────────┘
 ```
 
 ## Bot 指令
@@ -72,13 +73,14 @@
 
 | 指令 | 說明 |
 |------|------|
-| `/start` | 顯示歡迎訊息 |
+| `/start` | 顯示歡迎訊息 + Web 控制台登入按鈕 |
 | `/url` | 取得目前 API 端點 URL |
 | `/key` | API Key 管理（查看現有 / 新增 / 多選刪除），首次使用自動建立，格式 `sk-s12ryt-{uuid-v7}` |
 | `/usage` | 查看各 API Key 的 Token 用量與費用 |
 | `/coding` | Coding 模式管理（開關 / 設定 fallback 模型鏈，API 報錯時自動重試下一個模型） |
 | `/model_catch` | 抓取任意 API 的模型列表（輸入 URL → 不帶 key 嘗試 → 401/403 再問 key） |
 | `/my_limits` | 查看自己的有效限制（RPM/TPM/並發/配額）與今日/月用量 |
+| `/web` | 取得 Web 控制台一次性登入連結（OTP 5 分鐘有效，登入後 Session 24 小時） |
 
 ### 管理員指令
 
@@ -95,6 +97,46 @@
 | `/version` | 查看當前程式版本（commit hash + tag + 日期） |
 | `/update` | 檢查 GitHub Release 更新並一鍵更新（git pull + tarball 備援） |
 | `/restart` | 重啟進程 |
+
+## Web 控制台（僅 Node.js）
+
+除了 Telegram Bot 指令外，Node.js 版本提供完整的瀏覽器管理面板，操作更直觀、支援即時預覽和批量操作。
+
+### 認證流程
+
+Web 控制台採用 **OTP + Session** 兩階段認證，無需獨立帳號密碼：
+
+```
+1. 用戶在 Telegram 執行 /web 或點擊選單中的 Web 按鈕
+2. Bot 產生一次性 OTP token（5 分鐘有效）
+3. 用戶點擊連結 → 瀏覽器開啟 Web 控制台 → 前端用 OTP 換取 Session Token
+4. Session Token（24 小時有效）用於後續所有 API 請求
+```
+
+> 管理員透過 `/web` 或各管理指令選單中的 Web 按鈕進入，普通用戶只能看到自己的資料。
+
+### 功能頁面
+
+| 頁面 | 一般用戶 | 管理員 | 說明 |
+|------|:--------:|:------:|------|
+| 儀表板 | ✅ | ✅ | 總覽：模型數量、Key 數量、今日用量摘要 |
+| API Key 管理 | ✅ | ✅ | 新增 / 複製 / 刪除自己的 Key |
+| 用量統計 | ✅ | ✅ | 按Key 分組的 Token 用量與費用 |
+| Coding 模式 | ✅ | ✅ | 開關、設定 fallback 模型鏈 |
+| 使用限制 | ✅ | ✅ | 有效限制（RPM/TPM/並發/配額）+ 今日/月用量 |
+| 模型存取限制 | ✅ | ✅ | 白名單/黑名單查看 |
+| Provider 管理 | — | ✅ | 供應商 CRUD、每模型定價、協議偵測、模型抓取 |
+| 用戶管理 | — | ✅ | 新增/停用/刪除用戶、編輯 TG ID、Key 管理、限制設定 |
+| 用戶分組 | — | ✅ | 分組 CRUD、預設限制模板 |
+| 全域用量 | — | ✅ | 所有用戶用量統計 |
+| 系統設定 | — | ✅ | API URL 設定 |
+| 版本/更新 | — | ✅ | 查看版本、檢查更新、一鍵更新、重啟 |
+
+### 技術設計
+
+- **前端**：Vanilla JS SPA（無框架），單頁應用，hash 路由，Lucide 風格 SVG 圖標系統，暗色主題 + 響應式設計（手機/桌面自適應）
+- **後端 API**：Express Router 掛載於 `/web/api/*`，在 API auth/rate/quota 中間件之前，使用獨立的 session 認證中間件
+- **安全**：OTP 一次性使用（用後即刪）、Session 24h 過期、每 10 分鐘自動清理過期 token、API Key 只回傳末 12 碼預覽
 
 ## 快速開始
 
@@ -306,32 +348,40 @@ s12ryt-tg-api/
 │   │   ├── config.ts                # 環境變數配置
 │   │   ├── updater.ts               # 自動更新工具（從 GitHub Releases 拉取最新版）
 │   │   ├── api/                     # API 代理伺服器
-│   │   │   ├── server.ts
-│   │   │   ├── keySelector.ts       # 多金鑰選擇 + Circuit Breaker
-│   │   │   ├── middleware.ts
-│   │   │   ├── rateLimiter.ts       # 速率限制中間件（RPM/TPM 配額管控）
-│   │   │   ├── quotaChecker.ts      # 配額檢查中間件（有效模型限制檢查 + 快取）
+│   │   │   ├── server.ts            #   Express 主程式（掛載 Web 靜態檔 + 路由）
+│   │   │   ├── keySelector.ts       #   多金鑰選擇 + Circuit Breaker
+│   │   │   ├── middleware.ts        #   認證中間件（/web 路徑豁免 API Key 檢查）
+│   │   │   ├── rateLimiter.ts       #   速率限制中間件（RPM/TPM 配額管控）
+│   │   │   ├── quotaChecker.ts      #   配額檢查中間件（有效模型限制檢查 + 快取）
 │   │   │   ├── usageTracker.ts
 │   │   │   ├── responses.ts
 │   │   │   ├── anthropic_out.ts
-│   │   │   ├── thinkingParser.ts    # Thinking Effort 推理強度解析與注入
-│   │   │   └── providers/           # 各供應商適配器
-│   │   │       ├── openai.ts        #   openai_chat (Chat Completions)
-│   │   │       ├── openaiResponse.ts#   openai_response (Responses API)
+│   │   │   ├── thinkingParser.ts    #   Thinking Effort 推理強度解析與注入
+│   │   │   └── providers/           #   各供應商適配器
+│   │   │       ├── openai.ts        #     openai_chat (Chat Completions)
+│   │   │       ├── openaiResponse.ts#     openai_response (Responses API)
 │   │   │       ├── anthropic.ts
 │   │   │       └── google.ts
 │   │   ├── bot/                     # Telegram Bot
 │   │   │   ├── filters.ts
 │   │   │   ├── keyboards.ts
 │   │   │   ├── handlers/
-│   │   │   │   ├── adminHandlers.ts #   管理員指令
-│   │   │   │   ├── userHandlers.ts  #   用戶指令
-│   │   │   │   ├── modelFetcher.ts  #   模型清單抓取
-│   │   │   │   ├── limitHandlers.ts #   模型限制管理
+│   │   │   │   ├── adminHandlers.ts #   管理員指令（內嵌 Web 按鈕）
+│   │   │   │   ├── userHandlers.ts  #   用戶指令（/start 含 Web 登入連結）
+│   │   │   │   ├── modelFetcher.ts  #   模型清單抓取（協議偵測 + 模型 + 定價）
+│   │   │   │   ├── limitHandlers.ts #   模型限制管理（內嵌 Web 按鈕）
+│   │   │   │   ├── webHandlers.ts   #   /web 指令 + OTP 登入連結產生
 │   │   │   │   └── updateHandlers.ts#   版本更新
 │   │   │   └── conversations/
+│   │   ├── web/                     # Web 控制台後端
+│   │   │   ├── routes.ts            #   /web/api/* REST API 路由
+│   │   │   └── auth.ts              #   OTP + Session 認證系統
 │   │   └── db/
 │   │       └── database.ts
+│   ├── web/                         # Web 控制台前端（靜態檔案）
+│   │   ├── index.html               #   HTML 骨架 + SVG 導航圖標
+│   │   ├── app.js                   #   Vanilla JS SPA（hash 路由 + API 呼叫）
+│   │   └── style.css                #   暗色主題 CSS（響應式設計）
 │   ├── package.json
 │   ├── tsconfig.json
 │   └── .env.example
@@ -345,6 +395,7 @@ s12ryt-tg-api/
 |---|---|---|
 | Bot 框架 | python-telegram-bot | grammY |
 | Web 框架 | FastAPI + Uvicorn | Express |
+| Web 控制台前端 | — | Vanilla JS SPA（無框架，hash 路由） |
 | HTTP 用戶端 | httpx | — |
 | 資料庫 | aiosqlite (SQLite) | sql.js (WASM SQLite) |
 | UUID | uuid-utils | uuid |

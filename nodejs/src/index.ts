@@ -14,6 +14,7 @@ import { registerUserHandlers } from "./bot/handlers/userHandlers.js";
 import { registerAdminHandlers } from "./bot/handlers/adminHandlers.js";
 import { registerLimitHandlers } from "./bot/handlers/limitHandlers.js";
 import { registerUpdateHandlers } from "./bot/handlers/updateHandlers.js";
+import { registerWebHandlers } from "./bot/handlers/webHandlers.js";
 
 import { Bot, Context, session } from "grammy";
 import type { BotCommand } from "grammy/types";
@@ -53,6 +54,7 @@ async function setBotCommands(bot: MyBot): Promise<void> {
     { command: "coding", description: "Coding 模式管理（開關/設定）" },
     { command: "model_catch", description: "抓取 API 模型列表" },
     { command: "my_limits", description: "查看我的限制和用量" },
+    { command: "web", description: "取得 Web 控制台登入連結" },
   ];
 
   // 管理員指令
@@ -134,6 +136,7 @@ async function main(): Promise<void> {
   registerAdminHandlers(bot);
   registerLimitHandlers(bot);
   registerUpdateHandlers(bot);
+  registerWebHandlers(bot);
 
   // 3.5 Set bot commands menu
   await setBotCommands(bot);

@@ -44,6 +44,12 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
     return;
   }
 
+  // Web panel paths use their own session-based auth — skip API key check
+  if (req.path === "/web" || req.path.startsWith("/web/")) {
+    next();
+    return;
+  }
+
   const authHeader = req.headers.authorization ?? "";
 
   if (!authHeader) {

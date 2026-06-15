@@ -4,6 +4,7 @@
  */
 
 import { Bot, Context } from "grammy";
+import { webButton } from "./webHandlers.js";
 import {
   type ConversationFlavor,
   type Conversation,
@@ -641,7 +642,9 @@ async function limitsConversation(
   conversation: MyConversation,
   ctx: MyContext
 ): Promise<void> {
-  await ctx.reply(LIMITS_MENU_TEXT);
+  await ctx.reply(LIMITS_MENU_TEXT, {
+    reply_markup: webButton(ctx.from!.id, "groups"),
+  });
 
   const r = await conversation.wait();
   const input = r.message?.text?.trim();
@@ -703,7 +706,7 @@ async function handleMyLimits(ctx: MyContext): Promise<void> {
     }
   }
 
-  await ctx.reply(text);
+  await ctx.reply(text, { reply_markup: webButton(tgId, "limits") });
 }
 
 // ========================

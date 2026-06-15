@@ -8,6 +8,7 @@
 import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import http from "http";
+import path from "path";
 import { authMiddleware } from "./middleware.js";
 import { rateLimitMiddleware } from "./rateLimiter.js";
 import { quotaCheckMiddleware } from "./quotaChecker.js";
@@ -30,6 +31,7 @@ import {
 import { getProviders, lookupModelCached, rebuildProviderCache, onProviderCacheRebuild, type Provider, getActiveCodingForApiKey, incrementCodingSessionStats, checkModelAllowed, getAllowedModels, getUserByTgId } from "../db/database.js";
 import { config } from "../config.js";
 import { preprocessThinking, parseModelThinkingSuffix } from "./thinkingParser.js";
+import webRouter from "../web/routes.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -48,6 +50,11 @@ const app = express();
 
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: "10mb" }));
+
+// Web panel — mounted before API auth/rate/quota middleware so /web/* is exempt
+app.use("/web", express.static(path.join(process.cwd(), "web")));
+app.use("/web", webRouter);
+
 app.use(authMiddleware);
 app.use(rateLimitMiddleware);
 app.use(quotaCheckMiddleware);

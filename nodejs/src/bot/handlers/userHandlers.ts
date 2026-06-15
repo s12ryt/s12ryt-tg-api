@@ -22,6 +22,7 @@ import {
 import { isTrustedUser } from "../filters.js";
 import { fetchModelsNoAuth, fetchProviderModels } from "./modelFetcher.js";
 import { safeReplyModels } from "./adminHandlers.js";
+import { buildWebLoginUrl, webButton } from "./webHandlers.js";
 
 // ========================
 // 型別定義
@@ -39,20 +40,52 @@ const KEY_MENU_TEXT =
   "1. 查看 Key\n" +
   "2. 新增 Key\n" +
   "3. 刪除 Key\n\n" +
-  "請輸入數字選擇操作，或 /cancel 取消：";
+  "請輸入數字選擇操作，或 /cancel 取消：\n\n" +
+  "💡 也可使用 /web 在網頁操作";
 
 const CODING_MENU_TEXT =
   "💻 Coding 模式管理\n\n" +
   "1. 開關 Coding 模式\n" +
   "2. 設定 Coding 模式（Fallback 模型鏈）\n\n" +
-  "請輸入數字選擇操作，或 /cancel 取消：";
+  "請輸入數字選擇操作，或 /cancel 取消：\n\n" +
+  "💡 也可使用 /web 在網頁操作";
 
 // ========================
 // /start
 // ========================
 
 async function handleStart(ctx: MyContext): Promise<void> {
-  await ctx.reply("你好!");
+  const tgUserId = ctx.from?.id;
+  if (!tgUserId) {
+    await ctx.reply("你好!");
+    return;
+  }
+
+  try {
+    const loginUrl = buildWebLoginUrl(tgUserId);
+    const wb = webButton(tgUserId, undefined, "🌐 開啟 Web 控制台");
+
+    const intro =
+      "你好！我是你的 AI API 管理助手。\n\n" +
+      "📦 我能幫你：\n" +
+      "• 管理 API Key（/key）\n" +
+      "• 查看 Token 用量（/usage）\n" +
+      "• 設定 Coding 模式（/coding）\n" +
+      "• 查看使用限制（/my_limits）\n\n" +
+      "🌐 也可以使用 Web 控制台（功能更完整）：";
+
+    if (wb) {
+      await ctx.reply(intro, { reply_markup: wb });
+    } else {
+      // localhost / IP 位址無法作為 Telegram 按鈕 URL
+      await ctx.reply(intro + `\n\n🔗 請複製以下連結到瀏覽器開啟（5 分鐘有效）：\n\`${loginUrl}\``, {
+        parse_mode: "Markdown",
+      });
+    }
+  } catch (err) {
+    console.error("[start] Failed to generate Web login URL:", err);
+    await ctx.reply("你好！我是你的 AI API 管理助手。");
+  }
 }
 
 // ========================
@@ -76,7 +109,7 @@ async function keyConversation(
   await conversation.external(() => { ensureUserExists(tgId, ctx.from!.username); });
 
   while (true) {
-    await ctx.reply(KEY_MENU_TEXT);
+    await ctx.reply(KEY_MENU_TEXT, { reply_markup: webButton(tgId, "keys") });
     ctx = await conversation.wait();
     const choice = ctx.msg?.text?.trim() ?? "";
 
@@ -181,7 +214,7 @@ async function handleUsage(ctx: MyContext): Promise<void> {
   const usageRecords = getUsageByUser(tgId);
 
   if (usageRecords.length === 0) {
-    await ctx.reply("目前沒有使用紀錄。");
+    await ctx.reply("目前沒有使用紀錄。", { reply_markup: webButton(tgId, "usage") });
     return;
   }
 
@@ -226,7 +259,9 @@ async function handleUsage(ctx: MyContext): Promise<void> {
     );
   }
 
-  await ctx.reply(lines.join("\n\n"));
+  await ctx.reply(lines.join("\n\n"), {
+    reply_markup: webButton(tgId, "usage"),
+  });
 }
 
 // ========================
@@ -245,7 +280,7 @@ async function codingConversation(
   }
 
   while (true) {
-    await ctx.reply(CODING_MENU_TEXT);
+    await ctx.reply(CODING_MENU_TEXT, { reply_markup: webButton(tgId, "coding") });
     ctx = await conversation.wait();
     const choice = ctx.msg?.text?.trim() ?? "";
 

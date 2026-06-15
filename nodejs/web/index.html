@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#0a0c10">
+  <meta name="color-scheme" content="dark">
+  <meta name="description" content="S12RYT AI API 聚合代理 — 配置面板">
+  <title>S12RYT 配置面板</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- 登入等待畫面 -->
+  <div id="login-screen" class="login-screen">
+    <div class="login-card">
+      <div class="spinner" aria-label="載入中"></div>
+      <h2>正在驗證登入</h2>
+      <p id="login-msg">請稍候</p>
+    </div>
+  </div>
+
+  <!-- 主應用 -->
+  <div id="app" class="app hidden">
+    <!-- 行動端側欄切換按鈕 -->
+    <button class="mobile-nav-toggle" id="mobile-nav-toggle" aria-label="開啟選單">
+      <svg viewBox="0 0 24 24"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
+    </button>
+    <div class="mobile-nav-overlay" id="mobile-nav-overlay"></div>
+
+    <!-- 側邊欄 -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-header">
+        <h1>S12RYT</h1>
+        <span class="version-tag">配置面板</span>
+      </div>
+
+      <nav class="sidebar-nav" aria-label="主導航">
+        <!-- 用戶選單 -->
+        <div class="nav-group">
+          <div class="nav-group-title">個人</div>
+          <a href="#/dashboard" class="nav-item" data-route="dashboard">
+            <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></svg></span>
+            總覽
+          </a>
+          <a href="#/keys" class="nav-item" data-route="keys">
+            <span class="nav-icon"><svg viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="5.5"/><path d="M11 13l9-9"/><path d="M16 7l2 2"/><path d="M19 4l2 2"/></svg></span>
+            API Keys
+          </a>
+          <a href="#/usage" class="nav-item" data-route="usage">
+            <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 4 5-5"/></svg></span>
+            用量統計
+          </a>
+          <a href="#/coding" class="nav-item" data-route="coding">
+            <span class="nav-icon"><svg viewBox="0 0 24 24"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg></span>
+            Coding 模式
+          </a>
+          <a href="#/limits" class="nav-item" data-route="limits">
+            <span class="nav-icon"><svg viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></span>
+            我的限制
+          </a>
+          <a href="#/restrictions" class="nav-item" data-route="restrictions">
+            <span class="nav-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg></span>
+            模型限制
+          </a>
+        </div>
+
+        <!-- 管理員選單（動態顯示） -->
+        <div class="nav-group hidden" id="admin-nav">
+          <div class="nav-group-title">管理</div>
+          <a href="#/providers" class="nav-item" data-route="providers">
+            <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M9 2v6M15 2v6M9 8a3 3 0 0 0 6 0M2 12h20M5 12v8a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-8"/></svg></span>
+            供應商
+          </a>
+          <a href="#/users" class="nav-item" data-route="users">
+            <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span>
+            用戶管理
+          </a>
+          <a href="#/groups" class="nav-item" data-route="groups">
+            <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg></span>
+            用戶分組
+          </a>
+          <a href="#/all-usage" class="nav-item" data-route="all-usage">
+            <span class="nav-icon"><svg viewBox="0 0 24 24"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></span>
+            全域用量
+          </a>
+          <a href="#/settings" class="nav-item" data-route="settings">
+            <span class="nav-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></span>
+            系統設定
+          </a>
+          <a href="#/api-test" class="nav-item" data-route="api-test">
+            <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M9 3h6M10 3v6.5L5 17a2 2 0 0 0 1.73 3h10.54A2 2 0 0 0 19 17l-5-7.5V3"/><line x1="7" y1="14" x2="17" y2="14"/></svg></span>
+            API 測試
+          </a>
+          <a href="#/model-catch" class="nav-item" data-route="model-catch">
+            <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/></svg></span>
+            模型抓取
+          </a>
+          <a href="#/system" class="nav-item" data-route="system">
+            <span class="nav-icon"><svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></span>
+            系統管理
+          </a>
+        </div>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="user-info" id="user-info">
+          <span class="user-name" id="user-name">--</span>
+          <span class="user-role" id="user-role">用戶</span>
+        </div>
+        <button class="btn-logout" id="btn-logout" title="登出" aria-label="登出">退出</button>
+      </div>
+    </aside>
+
+    <!-- 主內容區 -->
+    <main class="main-content" id="main-content">
+      <!-- 由 JS 動態渲染 -->
+    </main>
+  </div>
+
+  <!-- Toast 容器 -->
+  <div class="toast-container" id="toast-container" aria-live="polite" aria-atomic="true"></div>
+
+  <!-- Modal 容器 -->
+  <div class="modal-overlay hidden" id="modal-overlay" role="dialog" aria-modal="true">
+    <div class="modal" id="modal">
+      <div class="modal-header">
+        <h3 id="modal-title">標題</h3>
+        <button class="modal-close" id="modal-close" aria-label="關閉">&times;</button>
+      </div>
+      <div class="modal-body" id="modal-body"></div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

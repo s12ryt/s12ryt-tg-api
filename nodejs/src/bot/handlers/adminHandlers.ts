@@ -1,6 +1,7 @@
 import { Bot, Context } from "grammy";
 import { Conversation, ConversationFlavor, createConversation } from "@grammyjs/conversations";
 import { config } from "../../config.js";
+import { webButton } from "./webHandlers.js";
 import {
   addProvider,
   getProviders,
@@ -158,7 +159,9 @@ async function providerConversation(
   ctx: MyContext
 ): Promise<void> {
   while (true) {
-    await ctx.reply(PROVIDER_MENU_TEXT);
+    await ctx.reply(PROVIDER_MENU_TEXT, {
+      reply_markup: webButton(ctx.from!.id, "providers"),
+    });
     ctx = await conversation.wait();
     const choice = ctx.msg?.text?.trim() ?? "";
 
@@ -1082,7 +1085,10 @@ async function uuCommand(ctx: MyContext): Promise<void> {
     );
   }
 
-  await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
+  await ctx.reply(lines.join("\n"), {
+    parse_mode: "Markdown",
+    reply_markup: webButton(ctx.from!.id, "all-usage"),
+  });
 }
 
 // ========================
@@ -1094,7 +1100,9 @@ async function subUrlConversation(
   ctx: MyContext
 ): Promise<void> {
   const currentUrl = getSetting("api_url") ?? config.DEFAULT_API_URL;
-  await ctx.reply(`目前 API URL：${currentUrl}\n\n請輸入新的 URL：`);
+  await ctx.reply(`目前 API URL：${currentUrl}\n\n請輸入新的 URL：`, {
+    reply_markup: webButton(ctx.from!.id, "settings"),
+  });
 
   ctx = await conversation.wait();
   const newUrl = ctx.msg?.text?.trim();
@@ -1130,7 +1138,9 @@ async function adminUserConversation(
   ctx: MyContext
 ): Promise<void> {
   while (true) {
-    await ctx.reply(ADMIN_USER_MENU_TEXT);
+    await ctx.reply(ADMIN_USER_MENU_TEXT, {
+      reply_markup: webButton(ctx.from!.id, "users"),
+    });
     ctx = await conversation.wait();
     const choice = ctx.msg?.text?.trim() ?? "";
 

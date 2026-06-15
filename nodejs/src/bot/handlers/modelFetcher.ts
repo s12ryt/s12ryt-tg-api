@@ -315,17 +315,16 @@ export async function detectApiProtocols(
   };
 
   // Run all probes in parallel
+  // Note: openai_chat detection uses ONLY POST /chat/completions (NOT GET /models,
+  // because /models is a generic listing endpoint that doesn't indicate chat support)
   // For anthropic, try BOTH /v1/messages AND /messages (handle /v1 prefix in baseUrl)
   const [
-    modelsGet,
     chatPost,
     responsePost,
     anthropicV1,
     anthropicNoV1,
     googleGet,
   ] = await Promise.all([
-    // openai_chat: GET /models
-    detailedProbe("GET", buildUrl(baseUrl, "/models"), bearer),
     // openai_chat: POST /chat/completions
     detailedProbe("POST", buildUrl(baseUrl, "/chat/completions"), bearerJson, {}),
     // openai_response: POST /responses
@@ -350,8 +349,8 @@ export async function detectApiProtocols(
     ),
   ]);
 
-  // openai_chat: combine GET /models and POST /chat/completions (pick best)
-  const openaiChat = pickBetter(analyzeStatus(modelsGet.status, modelsGet.bodySnippet), analyzeStatus(chatPost.status, chatPost.bodySnippet));
+  // openai_chat: POST /chat/completions only (NOT GET /models)
+  const openaiChat = analyzeStatus(chatPost.status, chatPost.bodySnippet);
 
   // openai_response: POST /responses
   const openaiResponse = analyzeStatus(responsePost.status, responsePost.bodySnippet);
