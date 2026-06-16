@@ -147,12 +147,26 @@ jobs:
           CURRENT="${{ steps.tag.outputs.current }}"
           PREVIOUS="${{ steps.tag.outputs.previous }}"
           
-          if [ -n "$PREVIOUS" ]; then
-            CHANGELOG=$(git log "${PREVIOUS}..${CURRENT}" --pretty=format:"- %s (%h)" --no-merges 2>/dev/null || echo "")
-            RANGE_TEXT="自 ${PREVIOUS} 以來的變更"
+          # 嘗試從 tag annotation 取得 categorized changelog（release 腳本產生）
+          TAG_BODY=$(git tag -l --format='%(contents)' "${CURRENT}" 2>/dev/null | head -200 || echo "")
+          
+          if [ -n "$TAG_BODY" ]; then
+            # 使用 tag annotation 的 categorized changelog
+            if [ -n "$PREVIOUS" ]; then
+              RANGE_TEXT="自 ${PREVIOUS} 以來的變更"
+            else
+              RANGE_TEXT="初始版本"
+            fi
+            CHANGELOG="$TAG_BODY"
           else
-            CHANGELOG=$(git log --pretty=format:"- %s (%h)" --no-merges -30 2>/dev/null || echo "")
-            RANGE_TEXT="初始版本"
+            # Fallback: 從 git log 生成（手動 tag 或無 release 腳本）
+            if [ -n "$PREVIOUS" ]; then
+              CHANGELOG=$(git log "${PREVIOUS}..${CURRENT}" --pretty=format:"- %s (%h)" --no-merges 2>/dev/null || echo "")
+              RANGE_TEXT="自 ${PREVIOUS} 以來的變更"
+            else
+              CHANGELOG=$(git log --pretty=format:"- %s (%h)" --no-merges -30 2>/dev/null || echo "")
+              RANGE_TEXT="初始版本"
+            fi
           fi
           
           if [ -z "$CHANGELOG" ]; then
