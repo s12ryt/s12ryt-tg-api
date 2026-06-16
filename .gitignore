@@ -34,3 +34,8 @@ Thumbs.db
 agent/
 thoughts/
 需求.md
+
+# Build artifacts
+nodejs.zip
+*.zip
+
