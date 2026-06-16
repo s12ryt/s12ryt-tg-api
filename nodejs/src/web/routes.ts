@@ -72,6 +72,8 @@ import {
   performUpdate,
   restartProcess,
   isWorkingDirClean,
+  getBackupList,
+  rollbackAndRestart,
 } from "../updater.js";
 import {
   // providers
@@ -1304,6 +1306,32 @@ router.post("/api/admin/restart", (req: Request, res: Response) => {
   } catch (err) {
     console.error("[web] restart error:", err);
     res.status(500).json({ error: "重啟失敗：" + (err instanceof Error ? err.message : String(err)) });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 版本回滾 (Blue-Green Rollback)
+// ---------------------------------------------------------------------------
+
+/** GET /web/api/admin/backups — 取得可用備份列表 */
+router.get("/api/admin/backups", (_req: Request, res: Response) => {
+  try {
+    const backups = getBackupList();
+    res.json({ backups });
+  } catch (err) {
+    console.error("[web] get backups error:", err);
+    res.status(500).json({ error: "取得備份列表失敗：" + (err instanceof Error ? err.message : String(err)) });
+  }
+});
+
+/** POST /web/api/admin/rollback — 回滾到最近的備份版本並重啟 */
+router.post("/api/admin/rollback", (_req: Request, res: Response) => {
+  try {
+    res.json({ ok: true, message: "即將回滾到上一個版本並重啟" });
+    rollbackAndRestart();
+  } catch (err) {
+    console.error("[web] rollback error:", err);
+    res.status(500).json({ error: "回滾失敗：" + (err instanceof Error ? err.message : String(err)) });
   }
 });
 

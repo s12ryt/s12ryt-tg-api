@@ -2139,6 +2139,15 @@
         </div>
 
         <div class="card" style="margin-top:16px;">
+          <div class="card-title">${ic.refresh} 版本回滾</div>
+          <div class="hint" style="margin-bottom:12px;">Blue-Green 更新會自動保留舊版本備份，可用於回滾到上一個版本。</div>
+          <div class="form-group">
+            <button class="btn btn-secondary" id="btn-load-backups">載入備份列表</button>
+            <div id="sys-backup-list" style="margin-top:12px;"></div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:16px;">
           <div class="card-title">${ic.alert} 危險操作</div>
           <div class="form-group">
             <button class="btn btn-danger" id="btn-restart">重啟進程</button>
@@ -2182,7 +2191,7 @@
                   resultDiv.innerHTML = `
                     <div style="padding:12px;background:var(--bg-accent);border-radius:8px;">
                       <p>${updateData.success ? ic.check : ic.alert} ${esc(updateData.message)}</p>
-                      ${updateData.method ? `<p style="font-size:12px;">更新方式: ${esc(updateData.method)}</p>` : ""}
+                      ${updateData.method ? `<p style="font-size:12px;">更新方式: ${esc(updateData.method === "blue-green" ? "🔄 Blue-Green 原子交換" : updateData.method === "tarball" ? "📦 tarball 下載" : "📥 git pull")}</p>` : ""}
                       <p style="font-size:12px;color:var(--text-secondary);">如果頁面沒有自動重連，請稍後手動刷新。</p>
                     </div>
                   `;
@@ -2217,6 +2226,57 @@
             toast(err.message, "error");
           }
         });
+      };
+
+      // 版本回滾
+      $("#btn-load-backups").onclick = async () => {
+        const btn = $("#btn-load-backups");
+        const listDiv = $("#sys-backup-list");
+        btn.disabled = true;
+        btn.textContent = "載入中...";
+        listDiv.innerHTML = loading();
+        try {
+          const data = await API.get("/web/api/admin/backups");
+          const backups = data.backups || [];
+          if (backups.length === 0) {
+            listDiv.innerHTML = `<p style="color:var(--text-secondary);">沒有可用的備份版本。執行過 Blue-Green 更新後才會產生備份。</p>`;
+          } else {
+            listDiv.innerHTML = backups.map((b, i) => `
+              <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:var(--bg-accent);border-radius:8px;margin-bottom:8px;">
+                <div>
+                  <strong>${i === 0 ? "最新備份" : `備份 #${i + 1}`}</strong>
+                  <span style="font-size:12px;color:var(--text-secondary);margin-left:8px;">${esc(new Date(b.timestamp).toLocaleString())}</span>
+                </div>
+                ${i === 0 ? `<button class="btn btn-danger" id="btn-do-rollback" style="padding:4px 12px;font-size:13px;">回滾到此版本</button>` : ""}
+              </div>
+            `).join("");
+            const rollbackBtn = $("#btn-do-rollback");
+            if (rollbackBtn) {
+              rollbackBtn.onclick = () => {
+                confirm("確定要回滾到上一個版本嗎？當前版本會被保存為新備份，服務會短暫中斷。", async () => {
+                  rollbackBtn.disabled = true;
+                  rollbackBtn.textContent = "回滾中...";
+                  try {
+                    await API.post("/web/api/admin/rollback", {});
+                    listDiv.innerHTML = `<div style="padding:12px;background:var(--bg-accent);border-radius:8px;"><p>${ic.check} 回滾指令已執行，正在重啟...</p><p style="font-size:12px;color:var(--text-secondary);">如果頁面沒有自動重連，請稍後手動刷新。</p></div>`;
+                    toast("回滾中，請稍候刷新頁面", "success");
+                    setTimeout(() => location.reload(), 5000);
+                  } catch (err) {
+                    toast(err.message, "error");
+                    rollbackBtn.disabled = false;
+                    rollbackBtn.textContent = "回滾到此版本";
+                  }
+                });
+              };
+            }
+          }
+        } catch (err) {
+          listDiv.innerHTML = `<p style="color:var(--accent-red);">載入失敗: ${esc(err.message)}</p>`;
+          toast(err.message, "error");
+        } finally {
+          btn.disabled = false;
+          btn.textContent = "載入備份列表";
+        }
       };
     } catch (err) {
       body.innerHTML = errorState(err.message);

@@ -1,6 +1,7 @@
 /**
  * /version  — 查看當前程式版本
- * /update   — 檢查更新 + 確認後執行更新（git pull → tarball 備援）+ 重啟
+ * /update   — 檢查更新 + 確認後執行 Blue-Green 更新 + 重啟
+ * /rollback — 回滾到上一個備份版本 + 重啟
  * /restart  — 立即重啟進程
  *
  * 以上指令僅限管理員使用。
@@ -16,6 +17,8 @@ import {
   performUpdate,
   restartProcess,
   isWorkingDirClean,
+  getBackupList,
+  rollbackAndRestart,
 } from "../../updater.js";
 
 type MyContext = Context & ConversationFlavor;
@@ -133,6 +136,58 @@ async function updateCommand(ctx: MyContext): Promise<void> {
 }
 
 // ========================
+// /rollback — 回滾到上一個備份版本
+// ========================
+
+async function rollbackCommand(ctx: MyContext): Promise<void> {
+  try {
+    const backups = getBackupList();
+
+    if (backups.length === 0) {
+      await ctx.reply("📦 沒有可用的備份版本。\n\n需要先執行過 /update 才能回滾。");
+      return;
+    }
+
+    const lines = backups.slice(0, 5).map((b, i) => {
+      const time = b.createdAt.toLocaleString("zh-TW", { timeZone: "Asia/Taipei" });
+      return `${i === 0 ? "🟢" : "⚪"} \`${b.name}\`\n   🕐 ${time}`;
+    });
+
+    const keyboard = new InlineKeyboard()
+      .text("✅ 確認回滾", "rollback_confirm")
+      .text("❌ 取消", "rollback_cancel");
+
+    await ctx.reply(
+      `📦 *可回滾的備份版本*\n\n${lines.join("\n\n")}\n\n` +
+      `⚠️ 將回滾到最新的備份（🟢）。當前版本會自動備份。`,
+      { parse_mode: "Markdown", reply_markup: keyboard },
+    );
+  } catch (err: any) {
+    await ctx.reply(`❌ 取得備份列表失敗：${err.message}`);
+  }
+}
+
+async function handleRollbackConfirm(ctx: MyContext): Promise<void> {
+  try {
+    await ctx.answerCallbackQuery();
+    await ctx.editMessageText("⏳ 正在回滾...");
+    rollbackAndRestart();
+  } catch (err: any) {
+    try {
+      await ctx.answerCallbackQuery();
+    } catch { /* ignore */ }
+    await ctx.editMessageText(`❌ 回滾失敗：${err.message}`);
+  }
+}
+
+async function handleRollbackCancel(ctx: MyContext): Promise<void> {
+  try {
+    await ctx.answerCallbackQuery({ text: "已取消回滾" });
+    await ctx.editMessageText("🚫 已取消回滾。");
+  } catch { /* ignore */ }
+}
+
+// ========================
 // /restart — 立即重啟
 // ========================
 
@@ -154,13 +209,16 @@ async function handleUpdateConfirm(ctx: MyContext): Promise<void> {
   try {
     await ctx.answerCallbackQuery();
     await ctx.editMessageText(
-      "⏳ 正在更新程式碼...\n\n嘗試 git pull，失敗則改用 tarball 下載。",
+      "⏳ 正在更新程式碼...\n\nBlue-Green 更新中：下載 → npm install → 編譯 → 原子交換。",
     );
 
     const result = await performUpdate();
 
     if (result.success) {
-      const methodText = result.method === "tarball" ? "📦 tarball 下載" : "📥 git pull";
+      const methodText =
+        result.method === "blue-green" ? "🔄 Blue-Green 原子交換"
+        : result.method === "tarball" ? "📦 tarball 下載"
+        : "📥 git pull";
       await ctx.editMessageText(
         `✅ ${result.message}\n\n` +
         `🔧 更新方式：${methodText}\n\n` +
@@ -205,9 +263,12 @@ export function registerUpdateHandlers(bot: Bot<MyContext>): void {
 
   bot.command("version", adminOnly(versionCommand));
   bot.command("update", adminOnly(updateCommand));
+  bot.command("rollback", adminOnly(rollbackCommand));
   bot.command("restart", adminOnly(restartCommand));
 
   // Callback queries
   bot.callbackQuery("update_confirm", adminOnly(handleUpdateConfirm));
   bot.callbackQuery("update_cancel", adminOnly(handleUpdateCancel));
+  bot.callbackQuery("rollback_confirm", adminOnly(handleRollbackConfirm));
+  bot.callbackQuery("rollback_cancel", adminOnly(handleRollbackCancel));
 }
