@@ -215,6 +215,15 @@ def get_latest_release() -> ReleaseInfo | None:
 def get_current_version() -> VersionInfo:
     """取得當前版本資訊"""
     if not _is_git_repo():
+        # Fallback: git 不可用時（tarball 安裝），從 VERSION 檔案讀版本
+        try:
+            version_file = os.path.join(os.path.dirname(__file__), "..", "VERSION")
+            with open(version_file, "r", encoding="utf-8") as f:
+                version = f.read().strip()
+            if version:
+                return VersionInfo(hash="unknown", date="", message="", tag=f"v{version}")
+        except Exception:
+            pass
         return VersionInfo(hash="unknown", date="", message="", tag=None)
     return _parse_version_info("HEAD")
 

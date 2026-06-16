@@ -6,7 +6,8 @@
     "dev": "tsx watch --exclude \"data/**\" src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "test": "vitest run"
+    "test": "vitest run",
+    "release": "tsx scripts/release.ts"
   },
   "dependencies": {
     "@grammyjs/conversations": "^1.2.0",
