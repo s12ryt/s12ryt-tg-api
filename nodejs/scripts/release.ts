@@ -16,7 +16,7 @@
  *   6. git commit + tag + push（tag annotation 帶 changelog 供 CI 使用）
  */
 
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -31,7 +31,7 @@ const REPO_ROOT = join(NODEJS_DIR, "..");
 // ─── Git 輔助 ──────────────────────────────────────────────
 
 function git(args: string[], cwd = REPO_ROOT): string {
-  return execSync(`git ${args.join(" ")}`, {
+  return execFileSync("git", args, {
     cwd,
     encoding: "utf-8",
     timeout: 30_000,
