@@ -2,6 +2,18 @@
 
 所有版本變更記錄。本檔案由 `npm run release` 自動維護。
 
+## [1.7.0] - 2026-06-17
+
+### ✨ Features
+- add model mapping and API log pages to web console (6937325)
+- add model mapping and API log admin endpoints to web routes (b2c39fe)
+- add model name remapping and API request logging to server (50d8947)
+- add in-memory API log ring buffer store (1e0a1fd)
+- add model mapping table and cache support to database (286af7e)
+
+### 🐛 Bug Fixes
+- use display names in /v1/models response via provider cache (17ce867)
+
 ## [1.6.0] - 2026-06-17
 
 ### ✨ Features
