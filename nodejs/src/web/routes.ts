@@ -188,6 +188,10 @@ router.get("/api/keys", (req: Request, res: Response) => {
 router.post("/api/keys", (req: Request, res: Response) => {
   const { tgUserId } = req.webAuth!;
   try {
+    // 管理員/新用戶可能尚無 users 表記錄，建立第一個 Key 時自動補建
+    if (!getUserByTgId(tgUserId)) {
+      addUser(tgUserId);
+    }
     const result = addApiKey(tgUserId);
     res.json({ key: result.key });
   } catch (err) {
