@@ -2,6 +2,13 @@
 
 所有版本變更記錄。本檔案由 `npm run release` 自動維護。
 
+## [1.6.0] - 2026-06-17
+
+### ✨ Features
+- improve web console API key and provider form UI (9cbdcfa)
+- add API key view/copy endpoint and key strategy to web routes (be1862b)
+- add key selection strategy (round-robin, random, failover) backend (e3d73f3)
+
 ## [1.5.0] - 2026-06-17
 
 ### ✨ Features
