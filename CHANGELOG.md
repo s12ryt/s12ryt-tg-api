@@ -2,6 +2,12 @@
 
 所有版本變更記錄。本檔案由 `npm run release` 自動維護。
 
+## [1.5.0] - 2026-06-17
+
+### ✨ Features
+- add group management UI with model picker to web console (139c99b)
+- add group model restriction and set-default-group backend (83c1bac)
+
 ## [1.4.1] - 2026-06-17
 
 ### 🐛 Bug Fixes
