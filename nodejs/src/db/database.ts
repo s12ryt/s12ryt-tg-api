@@ -337,6 +337,19 @@ function createTables(db: SqlJsDatabase): void {
   }
 
   // -------------------------------------------------------------------------
+  // model_mappings table — display name aliases for provider models
+  // -------------------------------------------------------------------------
+  db.run(`
+    CREATE TABLE IF NOT EXISTS model_mappings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      provider_id INTEGER NOT NULL,
+      original_model TEXT NOT NULL,
+      display_name TEXT NOT NULL,
+      UNIQUE(provider_id, original_model)
+    );
+  `);
+
+  // -------------------------------------------------------------------------
   // Performance indexes — speeds up quota queries (hottest path: per-request)
   // -------------------------------------------------------------------------
   db.run(`CREATE INDEX IF NOT EXISTS idx_usage_api_key_created ON usage(api_key_id, created_at)`);
@@ -457,6 +470,7 @@ interface CachedProvider {
   keyStrategy: string;
   inputPrice: number | null;
   outputPrice: number | null;
+  originalModel: string;
 }
 
 /** model_name -> CachedProvider */
@@ -474,6 +488,13 @@ export function rebuildProviderCache(): void {
   const newCache = new Map<string, CachedProvider>();
   const providers = queryAll("SELECT * FROM providers WHERE enabled = 1 ORDER BY id");
 
+  // Load all model mappings into a lookup map: "pid:originalModel" -> displayName
+  const mappingRows = queryAll("SELECT provider_id, original_model, display_name FROM model_mappings");
+  const mappingMap = new Map<string, string>();
+  for (const m of mappingRows) {
+    mappingMap.set(`${Number(m.provider_id)}:${String(m.original_model)}`, String(m.display_name));
+  }
+
   for (const p of providers) {
     const pid = Number(p.id);
     const models = String(p.models || "")
@@ -490,7 +511,10 @@ export function rebuildProviderCache(): void {
       const inputPrice = mp ? (mp.input_price as number | null) : (p.input_price as number | null);
       const outputPrice = mp ? (mp.output_price as number | null) : (p.output_price as number | null);
 
-      newCache.set(modelName, {
+      // Use display name as cache key if a mapping exists, otherwise use original name
+      const displayName = mappingMap.get(`${pid}:${modelName}`) ?? modelName;
+
+      newCache.set(displayName, {
         providerType: String(p.api_type),
         providerId: pid,
         providerName: String(p.name),
@@ -499,6 +523,7 @@ export function rebuildProviderCache(): void {
         keyStrategy: String(p.key_strategy ?? "failover"),
         inputPrice,
         outputPrice,
+        originalModel: modelName,
       });
     }
   }
@@ -521,6 +546,72 @@ export function lookupModelCached(modelName: string): CachedProvider | undefined
  */
 export function getAllCachedModelNames(): string[] {
   return Array.from(providerCache.keys()).sort();
+}
+
+// ===========================================================================
+// Model Mappings — display name aliases for provider models
+// ===========================================================================
+
+export interface ModelMapping {
+  provider_id: number;
+  provider_name: string;
+  original_model: string;
+  display_name: string;
+}
+
+/** Get all model mappings joined with provider names. */
+export function getModelMappings(): ModelMapping[] {
+  if (!db) return [];
+  return queryAll(
+    `SELECT mm.provider_id, p.name as provider_name, mm.original_model, mm.display_name
+     FROM model_mappings mm
+     JOIN providers p ON mm.provider_id = p.id
+     ORDER BY p.name, mm.original_model`
+  ).map((r) => ({
+    provider_id: Number(r.provider_id),
+    provider_name: String(r.provider_name),
+    original_model: String(r.original_model),
+    display_name: String(r.display_name),
+  }));
+}
+
+/** Insert or update a model mapping. */
+export function upsertModelMapping(providerId: number, originalModel: string, displayName: string): void {
+  if (!db) return;
+  db.run(
+    `INSERT INTO model_mappings (provider_id, original_model, display_name)
+     VALUES (?, ?, ?)
+     ON CONFLICT(provider_id, original_model)
+     DO UPDATE SET display_name = excluded.display_name`,
+    [providerId, originalModel, displayName]
+  );
+  saveDb();
+  invalidateProviderCache();
+}
+
+/** Delete a model mapping. */
+export function deleteModelMapping(providerId: number, originalModel: string): void {
+  if (!db) return;
+  db.run(
+    "DELETE FROM model_mappings WHERE provider_id = ? AND original_model = ?",
+    [providerId, originalModel]
+  );
+  saveDb();
+  invalidateProviderCache();
+}
+
+/** Replace all model mappings (batch operation). */
+export function replaceModelMappings(mappings: Array<{ provider_id: number; original_model: string; display_name: string }>): void {
+  if (!db) return;
+  db.run("DELETE FROM model_mappings");
+  for (const m of mappings) {
+    db.run(
+      "INSERT INTO model_mappings (provider_id, original_model, display_name) VALUES (?, ?, ?)",
+      [m.provider_id, m.original_model, m.display_name]
+    );
+  }
+  saveDb();
+  invalidateProviderCache();
 }
 
 /**
