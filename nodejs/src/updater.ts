@@ -7,7 +7,7 @@
  *   - 自動重啟進程
  */
 
-import { spawn, execSync, type SpawnOptions } from "node:child_process";
+import { spawn, execSync, execFileSync, type SpawnOptions } from "node:child_process";
 import {
   utimesSync,
   writeFileSync,
@@ -497,6 +497,61 @@ function cleanOldBackups(): void {
   } catch { /* ignore */ }
 }
 
+/** 偵測錯誤是否為 OOM（記憶體不足被系統終止） */
+function isOOMError(err: any): boolean {
+  return err?.signal === "SIGKILL" ||
+    String(err?.message ?? "").includes("Killed") ||
+    String(err?.stderr ?? "").includes("Killed");
+}
+
+/** 記憶體受限環境的 npm 環境變數（限制 V8 堆疊 + 關閉非必要功能） */
+function buildNpmEnv(): Record<string, string | undefined> {
+  return {
+    ...process.env,
+    NODE_OPTIONS: [process.env.NODE_OPTIONS, "--max-old-space-size=384"]
+      .filter(Boolean).join(" "),
+  };
+}
+
+/**
+ * 在指定目錄執行 npm install/ci，針對低記憶體容器優化
+ *
+ * 策略：npm ci（更快更省記憶體）→ 失敗回退 npm install → OOM 偵測
+ */
+function runNpmInstall(cwd: string, timeoutMs = 180_000): void {
+  const env = buildNpmEnv();
+  const hasLockfile = existsSync(join(cwd, "package-lock.json"));
+  const flags = ["--no-audit", "--no-fund", "--prefer-offline"];
+
+  try {
+    // 優先使用 npm ci（跳過依賴解析，更快更省記憶體）
+    if (hasLockfile) {
+      execFileSync("npm", ["ci", ...flags], {
+        cwd, timeout: timeoutMs, stdio: ["pipe", "pipe", "pipe"], env,
+      });
+    } else {
+      execFileSync("npm", ["install", ...flags], {
+        cwd, timeout: timeoutMs, stdio: ["pipe", "pipe", "pipe"], env,
+      });
+    }
+  } catch (err: any) {
+    // npm ci 失敗（lockfile 不同步等）→ 回退到 npm install
+    if (hasLockfile && !isOOMError(err)) {
+      console.warn("[updater] npm ci 失敗，回退到 npm install...");
+      execFileSync("npm", ["install", ...flags], {
+        cwd, timeout: timeoutMs, stdio: ["pipe", "pipe", "pipe"], env,
+      });
+      return;
+    }
+    // OOM 或 npm install 也失敗 → 清晰的錯誤訊息
+    throw new Error(
+      isOOMError(err)
+        ? "npm install 因記憶體不足被系統終止 (OOM Kill)。請增加容器記憶體限制（建議 ≥512MB）。"
+        : `npm install 失敗：${err.message}`,
+    );
+  }
+}
+
 /**
  * 執行 Blue-Green 更新
  *
@@ -513,13 +568,9 @@ export async function performBlueGreenUpdate(
     await downloadAndExtract(tarballUrl, stagingPath);
     console.log("[updater] 下載解壓完成");
 
-    // Step 2: npm install（在暫存目錄中）
+    // Step 2: npm install（在暫存目錄中）— 記憶體優化
     console.log("[updater] 正在安裝依賴 (npm install)...");
-    execSync("npm install", {
-      cwd: stagingPath,
-      timeout: 180_000,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    runNpmInstall(stagingPath);
 
     // Step 3: 判斷啟動模式
     const tsxMode = isTsxWatchMode();
@@ -530,10 +581,11 @@ export async function performBlueGreenUpdate(
     console.log("[updater] 正在編譯 (npm run build)...");
     let buildFailed = false;
     try {
-      execSync("npm run build", {
+      execFileSync("npm", ["run", "build"], {
         cwd: stagingPath,
         timeout: 120_000,
         stdio: ["pipe", "pipe", "pipe"],
+        env: buildNpmEnv(),
       });
     } catch {
       buildFailed = true;
