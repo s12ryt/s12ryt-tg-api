@@ -202,6 +202,17 @@ function compareSemVer(a: string, b: string): number {
 // GitHub API
 // ========================
 
+/** GitHub REST API /releases/latest 回應結構（僅取必要欄位） */
+interface GitHubReleaseApiResponse {
+  tag_name: string;
+  name: string | null;
+  prerelease: boolean;
+  published_at: string | null;
+  created_at: string | null;
+  html_url: string;
+  tarball_url: string;
+}
+
 /**
  * 取得最新 stable Release（非 prerelease）
  * 如果沒有 stable release，回傳 null
@@ -218,7 +229,7 @@ export async function getLatestRelease(): Promise<ReleaseInfo | null> {
 
     if (!resp.ok) return null;
 
-    const data = await resp.json() as any;
+    const data = await resp.json() as GitHubReleaseApiResponse;
     return {
       tag: data.tag_name,
       name: data.name || data.tag_name,
