@@ -31,6 +31,7 @@ import {
 import { getProviders, lookupModelCached, rebuildProviderCache, onProviderCacheRebuild, type Provider, getActiveCodingForApiKey, incrementCodingSessionStats, checkModelAllowed, getAllowedModels, getUserByTgId } from "../db/database.js";
 import { config } from "../config.js";
 import { preprocessThinking, parseModelThinkingSuffix } from "./thinkingParser.js";
+import { addApiLog } from "./apiLogStore.js";
 import webRouter from "../web/routes.js";
 
 // ---------------------------------------------------------------------------
@@ -151,6 +152,7 @@ interface ResolvedProvider {
   config: { baseUrl: string; apiKey: string; _keyIndex: number | null };
   inputPrice: number | null;
   outputPrice: number | null;
+  originalModel: string;
 }
 
 /**
@@ -171,12 +173,14 @@ function lookupModelDb(modelName: string): ResolvedProvider {
     config: { baseUrl: cached.baseUrl, apiKey: key ?? cached.apiKey, _keyIndex: keyIndex },
     inputPrice: cached.inputPrice,
     outputPrice: cached.outputPrice,
+    originalModel: cached.originalModel ?? modelName,
   };
 }
 
 interface DispatchResult {
   result: any;
   modelName: string;
+  providerName: string;
   providerType: string;
   providerId: number;
   providerConfig: { baseUrl: string; apiKey: string; _keyIndex: number | null };
@@ -220,13 +224,14 @@ async function dispatchWithFallback(
         if (!fbModule) continue;
 
         console.log(`Coding mode: trying model ${fbModel}`);
-        const fbBody: Record<string, any> = { ...body, model: fbModel };
+        const fbBody: Record<string, any> = { ...body, model: fbResolved.originalModel };
         if (fbThinkingLevel) fbBody.thinking_effort = fbThinkingLevel;
         const result = await fbModule.chatCompletion(fbBody, fbResolved.config);
 
         return {
           result,
           modelName: fbModel,
+          providerName: fbResolved.providerName,
           providerType: fbResolved.providerType,
           providerId: fbResolved.providerId,
           providerConfig: fbResolved.config,
@@ -249,6 +254,8 @@ async function dispatchWithFallback(
     }
 
     try {
+      // Replace body.model with the original model name for upstream calls
+      body.model = resolved.originalModel;
       const result = await providerModule.chatCompletion(body, resolved.config);
       // Report success for multi-key failover tracking
       if (resolved.config._keyIndex != null) {
@@ -257,6 +264,7 @@ async function dispatchWithFallback(
       return {
         result,
         modelName,
+        providerName: resolved.providerName,
         providerType: resolved.providerType,
         providerId: resolved.providerId,
         providerConfig: resolved.config,
@@ -559,19 +567,32 @@ app.post(
 
       // Dispatch with coding mode fallback
       const originalModel = modelName;
+      const logStart = Date.now();
       let dispatch: DispatchResult;
       const apiKeyId = req.auth ? parseInt(req.auth.apiKeyId, 10) : undefined;
       try {
         dispatch = await dispatchWithFallback(modelName, body, apiKeyId);
       } catch (err: any) {
         const statusCode = err.message?.includes("Unknown model") || err.message?.includes("coding-mode") ? 400 : 502;
+        addApiLog({
+          timestamp: new Date().toISOString(),
+          path: "/v1/chat/completions",
+          model: originalModel,
+          actualModel: originalModel,
+          providerName: "-",
+          username: req.auth ? String(req.auth.tgUserId) : "unknown",
+          body: { ...body, model: originalModel },
+          responseStatus: statusCode,
+          error: err.message,
+          latencyMs: Date.now() - logStart,
+        });
         res.status(statusCode).json({
           error: { message: err.message, type: statusCode === 400 ? "invalid_request_error" : "upstream_error" },
         });
         return;
       }
 
-      const { result, modelName: actualModel, providerType, providerId, providerConfig, inputPrice, outputPrice } = dispatch;
+      const { result, modelName: actualModel, providerName: dispProviderName, providerType, providerId, providerConfig, inputPrice, outputPrice } = dispatch;
       const isCodingMode = originalModel === "coding-mode";
 
       const isStream = body.stream === true;
@@ -590,8 +611,33 @@ app.post(
           // Record streaming usage
           await recordUsageAndCost(req.auth, providerId, actualModel,
             streamUsage.input_tokens, streamUsage.output_tokens, inputPrice, outputPrice, isCodingMode);
+          addApiLog({
+            timestamp: new Date().toISOString(),
+            path: "/v1/chat/completions",
+            model: originalModel,
+            actualModel,
+            providerName: dispProviderName,
+            username: req.auth ? String(req.auth.tgUserId) : "unknown",
+            body: { ...body, model: originalModel },
+            responseStatus: 200,
+            inputTokens: streamUsage.input_tokens,
+            outputTokens: streamUsage.output_tokens,
+            latencyMs: Date.now() - logStart,
+          });
         } catch (err: any) {
           console.error("Stream error:", err);
+          addApiLog({
+            timestamp: new Date().toISOString(),
+            path: "/v1/chat/completions",
+            model: originalModel,
+            actualModel,
+            providerName: dispProviderName,
+            username: req.auth ? String(req.auth.tgUserId) : "unknown",
+            body: { ...body, model: originalModel },
+            responseStatus: 502,
+            error: err.message,
+            latencyMs: Date.now() - logStart,
+          });
         } finally {
           res.end();
         }
@@ -604,6 +650,19 @@ app.post(
           const usage = extractUsage(providerType, result);
           await recordUsageAndCost(req.auth, providerId, actualModel,
             usage.input_tokens, usage.output_tokens, inputPrice, outputPrice, isCodingMode);
+          addApiLog({
+            timestamp: new Date().toISOString(),
+            path: "/v1/chat/completions",
+            model: originalModel,
+            actualModel,
+            providerName: dispProviderName,
+            username: req.auth ? String(req.auth.tgUserId) : "unknown",
+            body: { ...body, model: originalModel },
+            responseStatus: 200,
+            inputTokens: usage.input_tokens,
+            outputTokens: usage.output_tokens,
+            latencyMs: Date.now() - logStart,
+          });
         } catch (err) {
           console.error("Failed to record usage:", err);
         }
@@ -659,6 +718,7 @@ app.post(
       }
 
       // Optimization: for openai_response providers in non-coding mode, pass through directly
+      const logStart = Date.now();
       const isCodingResp = modelName === "coding-mode";
       const isStreamResp = body.stream === true;
 
@@ -676,6 +736,8 @@ app.post(
 
         if (_resolved.providerType === "openai_response") {
           try {
+            // Replace body.model with the original model name for upstream calls
+            body.model = _resolved.originalModel;
             const result = await openaiResponseProvider.responsesApi(body, _resolved.config);
 
             if (isStreamResp && result && Symbol.asyncIterator in Object(result)) {
@@ -691,8 +753,33 @@ app.post(
                   streamUsage.input_tokens, streamUsage.output_tokens,
                   _resolved.inputPrice, _resolved.outputPrice,
                 );
+                addApiLog({
+                  timestamp: new Date().toISOString(),
+                  path: "/v1/responses",
+                  model: modelName,
+                  actualModel: _resolved.originalModel,
+                  providerName: _resolved.providerName,
+                  username: req.auth ? String(req.auth.tgUserId) : "unknown",
+                  body: { ...body, model: modelName },
+                  responseStatus: 200,
+                  inputTokens: streamUsage.input_tokens,
+                  outputTokens: streamUsage.output_tokens,
+                  latencyMs: Date.now() - logStart,
+                });
               } catch (err: any) {
                 console.error("Responses direct stream error:", err);
+                addApiLog({
+                  timestamp: new Date().toISOString(),
+                  path: "/v1/responses",
+                  model: modelName,
+                  actualModel: _resolved.originalModel,
+                  providerName: _resolved.providerName,
+                  username: req.auth ? String(req.auth.tgUserId) : "unknown",
+                  body: { ...body, model: modelName },
+                  responseStatus: 502,
+                  error: err.message,
+                  latencyMs: Date.now() - logStart,
+                });
               } finally {
                 res.end();
               }
@@ -708,10 +795,35 @@ app.post(
                 _inT, _outT,
                 _resolved.inputPrice, _resolved.outputPrice,
               );
+              addApiLog({
+                timestamp: new Date().toISOString(),
+                path: "/v1/responses",
+                model: modelName,
+                actualModel: _resolved.originalModel,
+                providerName: _resolved.providerName,
+                username: req.auth ? String(req.auth.tgUserId) : "unknown",
+                body: { ...body, model: modelName },
+                responseStatus: 200,
+                inputTokens: _inT,
+                outputTokens: _outT,
+                latencyMs: Date.now() - logStart,
+              });
               res.json(result);
               return;
             }
           } catch (err: any) {
+            addApiLog({
+              timestamp: new Date().toISOString(),
+              path: "/v1/responses",
+              model: modelName,
+              actualModel: _resolved.originalModel,
+              providerName: _resolved.providerName,
+              username: req.auth ? String(req.auth.tgUserId) : "unknown",
+              body: { ...body, model: modelName },
+              responseStatus: 502,
+              error: err.message,
+              latencyMs: Date.now() - logStart,
+            });
             res.status(502).json({
               error: { message: err.message, type: "upstream_error" },
             });
@@ -776,13 +888,25 @@ app.post(
         dispatch = await dispatchWithFallback(modelName, chatBody as Record<string, any>, apiKeyIdResp);
       } catch (err: any) {
         const statusCode = err.message?.includes("Unknown model") || err.message?.includes("coding-mode") ? 400 : 502;
+        addApiLog({
+          timestamp: new Date().toISOString(),
+          path: "/v1/responses",
+          model: originalModelResp,
+          actualModel: originalModelResp,
+          providerName: "-",
+          username: req.auth ? String(req.auth.tgUserId) : "unknown",
+          body: { ...body },
+          responseStatus: statusCode,
+          error: err.message,
+          latencyMs: Date.now() - logStart,
+        });
         res.status(statusCode).json({
           error: { message: err.message, type: statusCode === 400 ? "invalid_request_error" : "upstream_error" },
         });
         return;
       }
 
-      const { result, modelName: actualModel, providerType: pt, providerId: pid, providerConfig: pcfg, inputPrice: ip, outputPrice: op } = dispatch;
+      const { result, modelName: actualModel, providerName: respProviderName, providerType: pt, providerId: pid, providerConfig: pcfg, inputPrice: ip, outputPrice: op } = dispatch;
       providerType = pt;
       providerId = pid;
       providerConfig = pcfg;
@@ -816,9 +940,34 @@ app.post(
 
           // Record streaming usage
           await recordUsageAndCost(req.auth, String(providerId), actualModel, streamUsage.input_tokens, streamUsage.output_tokens, inputPrice, outputPrice, isCodingModeResp);
+          addApiLog({
+            timestamp: new Date().toISOString(),
+            path: "/v1/responses",
+            model: originalModelResp,
+            actualModel,
+            providerName: respProviderName,
+            username: req.auth ? String(req.auth.tgUserId) : "unknown",
+            body: { ...body },
+            responseStatus: 200,
+            inputTokens: streamUsage.input_tokens,
+            outputTokens: streamUsage.output_tokens,
+            latencyMs: Date.now() - logStart,
+          });
 
         } catch (err: any) {
           console.error("Responses stream error:", err);
+          addApiLog({
+            timestamp: new Date().toISOString(),
+            path: "/v1/responses",
+            model: originalModelResp,
+            actualModel,
+            providerName: respProviderName,
+            username: req.auth ? String(req.auth.tgUserId) : "unknown",
+            body: { ...body },
+            responseStatus: 502,
+            error: err.message,
+            latencyMs: Date.now() - logStart,
+          });
         } finally {
           res.end();
         }
@@ -838,6 +987,19 @@ app.post(
         try {
           const usage = extractUsage(providerType, result2);
           await recordUsageAndCost(req.auth, String(providerId), actualModel, usage.input_tokens, usage.output_tokens, inputPrice, outputPrice, isCodingModeResp);
+          addApiLog({
+            timestamp: new Date().toISOString(),
+            path: "/v1/responses",
+            model: originalModelResp,
+            actualModel,
+            providerName: respProviderName,
+            username: req.auth ? String(req.auth.tgUserId) : "unknown",
+            body: { ...body },
+            responseStatus: 200,
+            inputTokens: usage.input_tokens,
+            outputTokens: usage.output_tokens,
+            latencyMs: Date.now() - logStart,
+          });
         } catch (err) {
           console.error("Failed to record usage:", err);
         }
@@ -910,6 +1072,7 @@ app.post(
 
       // Dispatch with coding mode fallback
       const originalModelMsg = modelName;
+      const logStart = Date.now();
       let dispatch: DispatchResult;
       const apiKeyIdMsg = req.auth ? parseInt(req.auth.apiKeyId, 10) : undefined;
       try {
@@ -917,6 +1080,18 @@ app.post(
       } catch (err: any) {
         const statusCode = err.message?.includes("Unknown model") || err.message?.includes("coding-mode") ? 400 : 502;
         const errorType = statusCode === 400 ? "invalid_request_error" : "api_error";
+        addApiLog({
+          timestamp: new Date().toISOString(),
+          path: "/v1/messages",
+          model: originalModelMsg,
+          actualModel: originalModelMsg,
+          providerName: "-",
+          username: req.auth ? String(req.auth.tgUserId) : "unknown",
+          body: { ...body },
+          responseStatus: statusCode,
+          error: err.message,
+          latencyMs: Date.now() - logStart,
+        });
         res.status(statusCode).json({
           type: "error",
           error: { type: errorType, message: err.message },
@@ -924,7 +1099,7 @@ app.post(
         return;
       }
 
-      const { result, modelName: actualModel, providerType, providerId, providerConfig, inputPrice, outputPrice } = dispatch;
+      const { result, modelName: actualModel, providerName: msgProviderName, providerType, providerId, providerConfig, inputPrice, outputPrice } = dispatch;
       const isCodingModeMsg = originalModelMsg === "coding-mode";
 
       // Streaming: convert OpenAI SSE → Anthropic SSE
@@ -945,8 +1120,33 @@ app.post(
           );
 
           await recordUsageAndCost(req.auth, String(providerId), actualModel, streamUsage.input_tokens, streamUsage.output_tokens, inputPrice, outputPrice, isCodingModeMsg);
+          addApiLog({
+            timestamp: new Date().toISOString(),
+            path: "/v1/messages",
+            model: originalModelMsg,
+            actualModel,
+            providerName: msgProviderName,
+            username: req.auth ? String(req.auth.tgUserId) : "unknown",
+            body: { ...body },
+            responseStatus: 200,
+            inputTokens: streamUsage.input_tokens,
+            outputTokens: streamUsage.output_tokens,
+            latencyMs: Date.now() - logStart,
+          });
         } catch (err: any) {
           console.error("Anthropic stream error:", err);
+          addApiLog({
+            timestamp: new Date().toISOString(),
+            path: "/v1/messages",
+            model: originalModelMsg,
+            actualModel,
+            providerName: msgProviderName,
+            username: req.auth ? String(req.auth.tgUserId) : "unknown",
+            body: { ...body },
+            responseStatus: 502,
+            error: err.message,
+            latencyMs: Date.now() - logStart,
+          });
         } finally {
           res.end();
         }
@@ -960,6 +1160,19 @@ app.post(
         try {
           const usage = extractUsage(providerType, result);
           await recordUsageAndCost(req.auth, String(providerId), actualModel, usage.input_tokens, usage.output_tokens, inputPrice, outputPrice, isCodingModeMsg);
+          addApiLog({
+            timestamp: new Date().toISOString(),
+            path: "/v1/messages",
+            model: originalModelMsg,
+            actualModel,
+            providerName: msgProviderName,
+            username: req.auth ? String(req.auth.tgUserId) : "unknown",
+            body: { ...body },
+            responseStatus: 200,
+            inputTokens: usage.input_tokens,
+            outputTokens: usage.output_tokens,
+            latencyMs: Date.now() - logStart,
+          });
         } catch (err) {
           console.error("Failed to record usage:", err);
         }

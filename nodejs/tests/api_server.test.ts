@@ -47,6 +47,8 @@ vi.mock("../src/db/database.js", () => {
     providerName: "Test OpenAI",
     baseUrl: "https://api.openai.com/v1",
     apiKey: "test-key",
+    keyStrategy: "failover",
+    originalModel: "gpt-4o",
     inputPrice: 0.005,
     outputPrice: 0.015,
   };
@@ -56,6 +58,8 @@ vi.mock("../src/db/database.js", () => {
     providerName: "Test Anthropic",
     baseUrl: "https://api.anthropic.com/v1",
     apiKey: "test-key",
+    keyStrategy: "failover",
+    originalModel: "claude-3.5-sonnet",
     inputPrice: 0.003,
     outputPrice: 0.015,
   };
@@ -153,10 +157,10 @@ vi.mock("../src/db/database.js", () => {
     }),
     lookupModelCached: vi.fn((modelName: string) => {
       if (modelName === "gpt-4o" || modelName === "gpt-4o-mini") {
-        return MOCK_OPENAI_PROVIDER;
+        return { ...MOCK_OPENAI_PROVIDER, originalModel: modelName };
       }
       if (modelName === "claude-3.5-sonnet" || modelName === "claude-3-haiku") {
-        return MOCK_ANTHROPIC_PROVIDER;
+        return { ...MOCK_ANTHROPIC_PROVIDER, originalModel: modelName };
       }
       return undefined;
     }),
