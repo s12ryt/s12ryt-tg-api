@@ -17,9 +17,14 @@
  *   SKIP_INSTALL=1 → 跳過自動 npm install
  */
 
-const { existsSync } = require("fs");
-const { spawn } = require("child_process");
-const path = require("path");
+import { existsSync } from "fs";
+import { spawn } from "child_process";
+import path from "path";
+import { fileURLToPath } from "url";
+
+// ── ESM 下 __dirname 的等價寫法 ──────────────────────────────────────────
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // ── 切換到此檔所在目錄（確保 data/ .env 等路徑正確）──────────────────────
 const appDir = __dirname;
