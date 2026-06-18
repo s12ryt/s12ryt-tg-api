@@ -399,7 +399,7 @@ s12ryt-tg-api/
 | HTTP 用戶端 | httpx | — |
 | 資料庫 | aiosqlite (SQLite) | sql.js (WASM SQLite) |
 | UUID | uuid-utils | uuid |
-| 語言 | Python 3.10+ | TypeScript / Node.js 18+ |
+| 語言 | Python 3.10+ | TypeScript / Node.js 24 LTS |
 
 ## License
 
