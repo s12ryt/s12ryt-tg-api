@@ -15,6 +15,8 @@
  * 環境變數：
  *   FORCE_DEV=1  → 強制使用 tsx 開發模式（跳過 dist/ 偵測）
  *   SKIP_INSTALL=1 → 跳過自動 npm install
+ *   BUILD_ONLY=1 → 只編譯/安裝依賴，不啟動伺服器（適用 CI / Netlify 等）
+ *   NETLIFY=true → 自動偵測為 build-only 模式（Netlify 自動設置）
  */
 
 import { existsSync } from "fs";
@@ -130,10 +132,44 @@ function ensureDependencies(callback) {
   }, { env: buildNpmEnv() });
 }
 
+// ── build-only 偵測（CI / Netlify 等只編譯不啟動的環境）────────────────
+const BUILD_ONLY = process.env.BUILD_ONLY === "1" || process.env.NETLIFY === "true";
+
 // ── 步驟 2：啟動應用 ────────────────────────────────────────────────────
 function startApp() {
   const distEntry = path.join(appDir, "dist", "index.js");
   const srcEntry = path.join(appDir, "src", "index.ts");
+
+  // build-only 模式：確保 dist/ 存在後直接退出
+  if (BUILD_ONLY) {
+    if (existsSync(distEntry)) {
+      log("BUILD_ONLY 模式：dist/ 已存在，跳過啟動。");
+      process.exit(0);
+    }
+    if (!existsSync(srcEntry)) {
+      console.error(`[start] BUILD_ONLY 模式但找不到 src/index.ts`);
+      process.exit(1);
+    }
+    const hasTsconfig = existsSync(path.join(appDir, "tsconfig.json"));
+    if (!hasTsconfig) {
+      log("BUILD_ONLY 模式：無 tsconfig，無需編譯，退出。");
+      process.exit(0);
+    }
+    log("BUILD_ONLY 模式：dist/ 不存在，執行 npm run build...");
+    spawnInherit("npm", ["run", "build"], (code, signal) => {
+      if (signal === "SIGKILL") {
+        console.error(`[start] ❌ npm run build 因記憶體不足被系統終止 (OOM Kill)！`);
+        process.exit(1);
+      }
+      if (code === 0 && existsSync(distEntry)) {
+        log("BUILD_ONLY 模式：編譯成功，跳過啟動。");
+        process.exit(0);
+      }
+      console.error(`[start] BUILD_ONLY 模式：編譯失敗（退出碼 ${code}）。`);
+      process.exit(1);
+    }, { env: buildNpmEnv() });
+    return;
+  }
 
   // 強制開發模式
   if (process.env.FORCE_DEV === "1" && existsSync(srcEntry)) {
