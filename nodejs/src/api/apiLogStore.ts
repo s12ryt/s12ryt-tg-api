@@ -6,6 +6,8 @@
  */
 
 const MAX_LOGS = 50;
+/** Max messages kept in log body to limit memory per entry. */
+const MAX_LOG_MESSAGES = 5;
 
 export interface ApiLogEntry {
   id: number;
@@ -31,6 +33,24 @@ let head = 0;
 let count = 0;
 let nextId = 1;
 
+/** Truncate large arrays in body (e.g. messages) to limit memory usage.
+ *  Keeps first 3 + last 1 message, replacing the rest with a marker. */
+function truncateBody(body: Record<string, any>): Record<string, any> {
+  const clone: Record<string, any> = { ...body };
+  if (Array.isArray(clone.messages) && clone.messages.length > MAX_LOG_MESSAGES) {
+    const head3 = clone.messages.slice(0, 3);
+    const last = clone.messages[clone.messages.length - 1];
+    const omitted = clone.messages.length - 4;
+    clone.messages = [
+      ...head3,
+      { role: "system", content: `[... ${omitted} messages truncated ...]` },
+      last,
+    ];
+    clone._messagesTruncated = true;
+  }
+  return clone;
+}
+
 /**
  * Add an API log entry. Deep-copies the body to avoid mutation after recording.
  */
@@ -38,8 +58,8 @@ export function addApiLog(entry: Omit<ApiLogEntry, "id">): void {
   const record: MutableApiLog = {
     ...entry,
     id: nextId++,
-    // Shallow-clone body with top-level fields to prevent later mutation
-    body: { ...entry.body },
+    // Shallow-clone body and truncate large arrays to limit memory usage
+    body: truncateBody(entry.body),
   };
 
   if (count < MAX_LOGS) {

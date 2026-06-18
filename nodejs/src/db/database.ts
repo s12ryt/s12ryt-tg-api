@@ -12,6 +12,7 @@ import initSqlJs, { type Database as SqlJsDatabase, type SqlValue } from "sql.js
 import path from "path";
 import fs from "fs";
 import { v7 as uuidv7 } from "uuid";
+import { clearProviderKeyState } from "../api/keySelector.js";
 
 let db: SqlJsDatabase | null = null;
 let dbPath: string = "";
@@ -379,9 +380,10 @@ function setupAutoSave(db: SqlJsDatabase): void {
 export function saveDb(): void {
   if (!db || !dbPath) return;
   try {
+    // sql.js export() returns Uint8Array; fs.writeFileSync accepts it directly,
+    // avoiding a redundant Buffer.from() copy that doubles peak memory per save.
     const data = db.export();
-    const buffer = Buffer.from(data);
-    fs.writeFileSync(dbPath, buffer);
+    fs.writeFileSync(dbPath, data);
   } catch (err) {
     console.error("[db] Failed to save database:", err);
   }
@@ -630,11 +632,16 @@ function invalidateProviderCache(): void {
 }
 let rebuildCachePending = false;
 
-/** Register a callback to be called whenever provider cache is rebuilt. */
+/** Register a callback to be called whenever provider cache is rebuilt.
+ *  Returns an unsubscribe function to remove the listener (prevents leak). */
 const providerCacheListeners: Array<() => void> = [];
 
-export function onProviderCacheRebuild(fn: () => void): void {
+export function onProviderCacheRebuild(fn: () => void): () => void {
   providerCacheListeners.push(fn);
+  return () => {
+    const i = providerCacheListeners.indexOf(fn);
+    if (i >= 0) providerCacheListeners.splice(i, 1);
+  };
 }
 
 function notifyProviderCacheRebuild(): void {
@@ -867,6 +874,8 @@ export function updateProvider(
 export function deleteProvider(ids: number[]): void {
   const placeholders = ids.map(() => "?").join(",");
   runSql(`DELETE FROM providers WHERE id IN (${placeholders})`, ids);
+  // Clean up in-memory keySelector state for deleted providers (prevents memory leak)
+  for (const id of ids) clearProviderKeyState(id);
   invalidateProviderCache();
 }
 

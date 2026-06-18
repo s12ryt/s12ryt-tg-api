@@ -184,3 +184,10 @@ export function getFirstKey(apiKeyJson: string): string {
   const keys = parseApiKeys(apiKeyJson);
   return keys[0] ?? '';
 }
+
+export function clearProviderKeyState(providerId: number): void {
+  /** Remove all in-memory state for a provider (fail counts, round-robin cursor).
+   *  Called when a provider is deleted from the DB to prevent memory leak. */
+  _state.delete(providerId);
+  _roundRobinIndex.delete(providerId);
+}

@@ -2,6 +2,19 @@
 
 所有版本變更記錄。本檔案由 `npm run release` 自動維護。
 
+## [Unreleased]
+
+### ⚡ Performance
+- optimize updater and start.js for low-resource containers (memory-adaptive heap sizing, timeout scaling, streaming download)
+- reduce API log memory footprint with request body truncation (keep first 3 + last 1 message)
+- avoid buffer copy in database saveDb (direct Uint8Array write to disk)
+- constrain npm concurrency in low-memory environments (maxsockets=2, fund/audit disabled)
+
+### 🐛 Bug Fixes
+- clear provider key state on provider deletion (prevents stale state memory leak)
+- propagate NODE_OPTIONS heap flag to restarted process in Blue-Green update
+- return unsubscribe function from onProviderCacheRebuild (proper cleanup)
+
 ## [1.7.1] - 2026-06-17
 
 ### ✨ Features

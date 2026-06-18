@@ -7,7 +7,7 @@
  *   - 自動重啟進程
  */
 
-import { spawn, execSync, execFileSync, type SpawnOptions } from "node:child_process";
+import { spawn, execFileSync, type SpawnOptions } from "node:child_process";
 import {
   utimesSync,
   writeFileSync,
@@ -17,8 +17,11 @@ import {
   rmSync,
   mkdirSync,
   renameSync,
+  createWriteStream,
 } from "node:fs";
 import { join } from "node:path";
+import os from "node:os";
+import { pipeline } from "node:stream/promises";
 import { closeDb } from "./db/database.js";
 import { fetchWithRetry, fetchGithub, applyMirror, diagnoseConnectivity } from "./net.js";
 export { diagnoseConnectivity } from "./net.js";
@@ -50,6 +53,58 @@ const BACKUP_PREFIX = ".backup-";
 
 /** 最大保留備份數量 */
 const MAX_BACKUPS = 2;
+
+// ========================
+// 低資源環境輔助函數
+// ========================
+
+/**
+ * 偵測系統總記憶體（MB）。
+ * 在容器中，os.totalmem() 會受 cgroup 限制自動回傳正確值。
+ */
+function getTotalMemMB(): number {
+  return Math.floor(os.totalmem() / 1024 / 1024);
+}
+
+/**
+ * 根據可用記憶體計算 V8 堆疊上限（--max-old-space-size）。
+ *
+ * 策略：取總記憶體的 50%，但限制在 [128, 512] MB 範圍內。
+ *   - 256MB 容器 → 128MB（留 128MB 給系統 + 主進程 + sql.js）
+ *   - 512MB 容器 → 256MB
+ *   - 1GB+       → 512MB（上限，避免無謂分配）
+ *
+ * 用戶可通過 MAX_OLD_SPACE 環境變數覆蓋。
+ */
+function getOptimalHeapSize(): number {
+  const override = parseInt(process.env.MAX_OLD_SPACE ?? "", 10);
+  if (!isNaN(override) && override >= 64) return override;
+
+  const totalMB = getTotalMemMB();
+  const calculated = Math.floor(totalMB * 0.5);
+  return Math.max(128, Math.min(512, calculated));
+}
+
+/**
+ * 低資源環境的 timeout 倍數。
+ *
+ * 在低 CPU / 低記憶體環境中，npm install 和 tsc 等操作需要更多時間。
+ * 根據記憶體量判斷資源受限程度：
+ *   - ≤ 512MB → 3 倍（嚴重受限）
+ *   - ≤ 1024MB → 2 倍（中度受限）
+ *   - > 1024MB → 1 倍（正常）
+ */
+function getTimeoutMultiplier(): number {
+  const totalMB = getTotalMemMB();
+  if (totalMB <= 512) return 3;
+  if (totalMB <= 1024) return 2;
+  return 1;
+}
+
+/** 快取倍數結果（啟動時計算一次，後續直接使用） */
+const TIMEOUT_MULT = getTimeoutMultiplier();
+/** 快取堆疊大小（啟動時計算一次） */
+const OPTIMAL_HEAP = getOptimalHeapSize();
 
 // ========================
 // 型別定義
@@ -120,10 +175,10 @@ export interface BackupInfo {
 
 function execGit(args: string[]): string {
   try {
-    const result = execSync(`git ${args.join(" ")}`, {
+    const result = execFileSync("git", args, {
       cwd: process.cwd(),
       encoding: "utf-8",
-      timeout: 30_000,
+      timeout: 30_000 * TIMEOUT_MULT,
       stdio: ["pipe", "pipe", "pipe"],
     });
     return result.trim();
@@ -389,21 +444,27 @@ async function downloadAndExtract(
   // Step 1: 下載 tarball（使用代理 + 重試 + 自動鏡像 fallback）
   console.log(`[updater] 正在下載 ${tarballUrl}...`);
   const resp = await fetchGithub(tarballUrl, {
-    timeoutMs: 180_000,
+    timeoutMs: 180_000 * TIMEOUT_MULT,
     retries: 2,
     headers: { "User-Agent": `${GITHUB_OWNER}-${GITHUB_REPO}-updater` },
   });
   if (!resp.ok) {
     throw new Error(`下載失敗：HTTP ${resp.status}`);
   }
-  const buffer = Buffer.from(await resp.arrayBuffer());
+  // 流式下載到磁碟（避免將整個 tarball 載入記憶體）
   const tarballPath = join(tmpDir, "release.tar.gz");
-  writeFileSync(tarballPath, buffer);
+  if (resp.body) {
+    await pipeline(resp.body, createWriteStream(tarballPath));
+  } else {
+    // fallback：某些環境 resp.body 為 null（如 undici 邊界情況）
+    const buf = Buffer.from(await resp.arrayBuffer());
+    writeFileSync(tarballPath, buf);
+  }
 
   // Step 2: 解壓縮
   console.log("[updater] 正在解壓縮...");
-  execSync(`tar -xzf "${tarballPath}" -C "${tmpDir}"`, {
-    timeout: 60_000,
+  execFileSync("tar", ["-xzf", tarballPath, "-C", tmpDir], {
+    timeout: 60_000 * TIMEOUT_MULT,
     stdio: "inherit",
   });
 
@@ -549,8 +610,10 @@ const NPM_REGISTRY_FALLBACKS = [
 function buildNpmEnv(registryOverride?: string): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = {
     ...process.env,
-    NODE_OPTIONS: [process.env.NODE_OPTIONS, "--max-old-space-size=384"]
+    NODE_OPTIONS: [process.env.NODE_OPTIONS, `--max-old-space-size=${OPTIMAL_HEAP}`]
       .filter(Boolean).join(" "),
+    // 低資源環境限制 npm 並發下載數，避免記憶體/CPU 突刺
+    npm_config_maxsockets: "2",
   };
 
   // Registry：override > NPM_REGISTRY env > npm 預設
@@ -594,7 +657,7 @@ function isNpmNetworkError(err: any): boolean {
  *   1. npm ci（更快更省記憶體）→ 失敗回退 npm install → OOM 偵測
  *   2. 網路失敗時自動切換到備用 registry 鏡像重試
  */
-function runNpmInstall(cwd: string, timeoutMs = 180_000): void {
+function runNpmInstall(cwd: string, timeoutMs = 180_000 * TIMEOUT_MULT): void {
   const hasLockfile = existsSync(join(cwd, "package-lock.json"));
   const flags = ["--no-audit", "--no-fund", "--prefer-offline"];
 
@@ -676,6 +739,9 @@ function runNpmInstall(cwd: string, timeoutMs = 180_000): void {
   );
 }
 
+/** 進度回調型別 — 用於向調用方報告更新進度 */
+export type ProgressCallback = (step: string) => void;
+
 /**
  * 執行 Blue-Green 更新
  *
@@ -683,16 +749,19 @@ function runNpmInstall(cwd: string, timeoutMs = 180_000): void {
  */
 export async function performBlueGreenUpdate(
   tarballUrl: string,
+  onProgress?: ProgressCallback,
 ): Promise<UpdateResult> {
   const cwd = process.cwd();
   const stagingPath = join(cwd, STAGING_DIR);
 
   try {
     // Step 1: 下載並解壓
+    onProgress?.("📥 正在下載新版本...");
     await downloadAndExtract(tarballUrl, stagingPath);
     console.log("[updater] 下載解壓完成");
 
     // Step 2: npm install（在暫存目錄中）— 記憶體優化
+    onProgress?.("📦 正在安裝依賴（這可能需要幾分鐘）...");
     console.log("[updater] 正在安裝依賴 (npm install)...");
     runNpmInstall(stagingPath);
 
@@ -702,12 +771,13 @@ export async function performBlueGreenUpdate(
 
     // Step 4: npm run build
     // production 模式必須成功編譯（dist/index.js）；tsx watch 模式不需要 dist/
+    onProgress?.("🔨 正在編譯程式碼...");
     console.log("[updater] 正在編譯 (npm run build)...");
     let buildFailed = false;
     try {
       execFileSync("npm", ["run", "build"], {
         cwd: stagingPath,
-        timeout: 120_000,
+        timeout: 120_000 * TIMEOUT_MULT,
         stdio: "inherit",
         env: buildNpmEnv(),
       });
@@ -735,6 +805,7 @@ export async function performBlueGreenUpdate(
     console.log("[updater] 驗證通過");
 
     // Step 6: 原子交換
+    onProgress?.("🔄 正在切換版本...");
     const backupName = atomicSwap(stagingPath);
     console.log(`[updater] 交換完成，備份：${backupName}`);
 
@@ -761,10 +832,12 @@ export async function performBlueGreenUpdate(
 /**
  * 執行更新（Blue-Green 方式）
  */
-export async function performUpdate(): Promise<UpdateResult> {
+export async function performUpdate(
+  onProgress?: ProgressCallback,
+): Promise<UpdateResult> {
   const release = await getLatestRelease();
   const tarballUrl = release?.tarballUrl ?? `${GITHUB_API_BASE}/tarball/main`;
-  return performBlueGreenUpdate(tarballUrl);
+  return performBlueGreenUpdate(tarballUrl, onProgress);
 }
 
 /**
@@ -838,6 +911,14 @@ export function restartProcess(delayMs = 2000): void {
 
     // 生產模式（非容器）：spawn 新的 detached 進程
     console.log("[updater] 正在啟動新進程...");
+    // 確保新進程也帶有 V8 heap 限制（即使當前進程是直接 node 啟動而非 start.js）
+    const childEnv = { ...process.env };
+    childEnv.NODE_OPTIONS = [
+      process.env.NODE_OPTIONS,
+      `--max-old-space-size=${OPTIMAL_HEAP}`,
+    ]
+      .filter(Boolean)
+      .join(" ");
     const child = spawn(
       process.execPath,
       process.argv.slice(1),
@@ -845,7 +926,7 @@ export function restartProcess(delayMs = 2000): void {
         detached: true,
         stdio: "inherit",
         cwd: process.cwd(),
-        env: process.env,
+        env: childEnv,
       } satisfies SpawnOptions,
     );
     child.unref();
@@ -947,8 +1028,10 @@ export function rollbackAndRestart(): { success: boolean; message: string } {
 /**
  * 更新並重啟
  */
-export async function updateAndRestart(): Promise<UpdateResult> {
-  const result = await performUpdate();
+export async function updateAndRestart(
+  onProgress?: ProgressCallback,
+): Promise<UpdateResult> {
+  const result = await performUpdate(onProgress);
   if (result.success) {
     restartProcess(2000);
   }

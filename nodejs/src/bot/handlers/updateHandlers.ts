@@ -238,7 +238,16 @@ async function handleUpdateConfirm(ctx: MyContext): Promise<void> {
       "⏳ 正在更新程式碼...\n\nBlue-Green 更新中：下載 → npm install → 編譯 → 原子交換。",
     );
 
-    const result = await performUpdate();
+    // 進度回報 — 每個步驟都通知用戶
+    const onProgress = async (step: string) => {
+      try {
+        await ctx.reply(step);
+      } catch {
+        // 忽略發送失敗（例如網路問題），不中斷更新
+      }
+    };
+
+    const result = await performUpdate(onProgress);
 
     if (result.success) {
       const methodText =

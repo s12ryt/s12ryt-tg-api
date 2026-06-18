@@ -20,8 +20,9 @@
 - **Token 用量追蹤** — 自動記錄每個 API Key 的輸入/輸出 Token 數與費用
 
 ### 高可用性
-- **多金鑰負載均衡** — 每個供應商可設定多個 API Key（逗號分隔），自動加權隨機選擇 + Circuit Breaker 故障轉移（連續失敗 ≥3 次 → 60 秒冷卻排除）
+- **多金鑰負載均衡** — 每個供應商可設定多個 API Key（逗號分隔），支援 3 種選擇策略：`failover`（預設，首鍵優先，失敗才切）、`round_robin`（輪詢）、`random`（隨機），搭配 Circuit Breaker 故障轉移（連續失敗 ≥3 次 → 60 秒冷卻排除）
 - **Coding Mode** — 用戶可設定 fallback 模型鏈，API 報錯時自動按順序重試下一個模型
+- **模型映射**（僅 Node.js）— 為每個供應商設定模型顯示名稱映射（`model_mappings`），對外顯示自訂名稱，內部自動路由到真實模型
 
 ### 權限與安全
 - **權限管理系統** — 速率限制（RPM/TPM）、並發上限、配額管理（日/月 Token 與費用）、使用期限、用戶分組，API Key 可覆蓋用戶設定
@@ -31,9 +32,11 @@
 ### 管理
 - **Telegram Bot 管理** — 所有操作透過 Telegram Bot 完成
 - **Web 控制台**（僅 Node.js）— 瀏覽器版管理面板，功能比 Bot 指令更完整直觀，OTP 一次性登入 + Session 認證
+- **API 日誌**（僅 Node.js）— 記憶體中保留最近 50 筆 API 請求日誌（環形緩衝區，不持久化），可用於除錯與監控
 - **指令統合設計** — 選單式多輪對話，少量指令完成所有操作
 - **模型抓取** — `/model_catch` 指令可抓取任意 API 的模型列表
 - **內置更新系統** — `/update` 指令直接從 GitHub Release 更新程式（git pull + tarball 備援）
+- **Cloudflare Tunnel**（僅 Node.js）— 內置隧道支援，一鍵暴露本地服務到公網（`quick` 臨時 URL / `token` 命名隧道）
 
 ### 效能
 - **Provider routing 快取** — 記憶體中維護 `model_name → provider` 映射，避免每次請求查 DB
@@ -45,6 +48,7 @@
 - **雙語言實作** — Python (FastAPI + python-telegram-bot) 與 Node.js (Express + grammY)
 - **完整測試** — 304 個單元 + 整合測試全部通過
 - **CI/CD** — GitHub Actions 自動發布 Release（push to main 更新 `latest`，tag v*.*.* 建立 stable）
+- **低資源容器優化**（僅 Node.js）— 自動偵測可用記憶體，動態調整 V8 heap size（50% 記憶體，[128, 512]MB 區間）、npm 並發連接數（maxsockets=2）和操作超時倍率（≤512MB→3x、≤1024MB→2x），適配 256MB 等低配 VPS / 容器
 
 ## 架構
 
@@ -167,6 +171,11 @@ npm run dev
 | `API_PORT` | ❌ | `8000` | API 代理伺服器監聽埠 |
 | `DATABASE_PATH` | ❌ | `./data/bot.db` | SQLite 資料庫檔案路徑 |
 | `DEFAULT_API_URL` | ❌ | `http://localhost:8000` | 顯示給用戶的預設 API 端點 URL |
+| `CLOUDFLARE_TUNNEL` | ❌ | — | Cloudflare 隧道模式：`quick`（臨時 trycloudflare URL）或 `token`（命名隧道，需搭配 `CLOUDFLARE_TOKEN`）（僅 Node.js） |
+| `CLOUDFLARE_TOKEN` | ❌ | — | Cloudflare 命名隧道 Token（`CLOUDFLARE_TUNNEL=token` 時必填）（僅 Node.js） |
+| `GITHUB_MIRROR` | ❌ | — | GitHub 代理鏡像 URL（用於 `git clone` / 下載 Release 時走鏡像，應對網路限制）（僅 Node.js） |
+| `NPM_REGISTRY` | ❌ | — | npm registry mirror URL（`npm install` 時使用自訂源）（僅 Node.js） |
+| `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` | ❌ | — | HTTP/HTTPS 代理（自動偵測系統環境變數，用於所有對外網路請求）（僅 Node.js） |
 
 ## API 代理使用方式
 
@@ -279,6 +288,7 @@ curl http://localhost:8000/v1/chat/completions \
 | **DB 複合索引** | usage / api_keys / users 表新增 4 個複合索引，查詢 O(n) → O(log n) |
 | **有效限制快取** | `getEffectiveLimits` 合併為單次 LEFT JOIN（原 3 次 SELECT）+ 60s TTL 快取 + 6 處失效點，每請求 DB 查詢從 ~10 降至 0-2 |
 | **中間件共享結果** | rateLimiter → quotaChecker 透過 `res.locals` / context 共享已查詢結果，避免重複查詢 |
+| **低資源容器適配**（僅 Node.js）| 啟動時偵測記憶體動態設定 V8 heap 上限 + npm 並發限制 + 超時倍率；更新流程改用流式下載（`pipeline`）避免 OOM；API 日誌截斷長請求體；DB 寫入去掉 Buffer 拷貝 |
 
 ## 支援的供應商
 
@@ -305,7 +315,8 @@ curl http://localhost:8000/v1/chat/completions \
 s12ryt-tg-api/
 ├── .github/
 │   └── workflows/
-│       └── release.yml              # GitHub Actions 自動發布（tag → Release + assets）
+│       ├── release.yml              # GitHub Actions 自動發布（tag → Release + assets）
+│       └── nodejs-ci.yml            # Node.js CI（build + test + npm audit gate）
 ├── python/                          # Python 版本
 │   ├── main.py                      # 程式進入點
 │   ├── config.py                    # 環境變數配置
@@ -347,9 +358,12 @@ s12ryt-tg-api/
 │   │   ├── index.ts                 # 程式進入點
 │   │   ├── config.ts                # 環境變數配置
 │   │   ├── updater.ts               # 自動更新工具（從 GitHub Releases 拉取最新版）
+│   │   ├── net.ts                   # 網路工具（代理/鏡像注入、連通性診斷）
+│   │   ├── tunnel.ts                # Cloudflare Tunnel 隧道（quick 臨時 URL / token 命名隧道）
 │   │   ├── api/                     # API 代理伺服器
 │   │   │   ├── server.ts            #   Express 主程式（掛載 Web 靜態檔 + 路由）
-│   │   │   ├── keySelector.ts       #   多金鑰選擇 + Circuit Breaker
+│   │   │   ├── apiLogStore.ts       #   API 請求日誌（環形緩衝區，記憶體中保留最近 50 筆）
+│   │   │   ├── keySelector.ts       #   多金鑰選擇 + Circuit Breaker（failover / round_robin / random）
 │   │   │   ├── middleware.ts        #   認證中間件（/web 路徑豁免 API Key 檢查）
 │   │   │   ├── rateLimiter.ts       #   速率限制中間件（RPM/TPM 配額管控）
 │   │   │   ├── quotaChecker.ts      #   配額檢查中間件（有效模型限制檢查 + 快取）
@@ -382,9 +396,17 @@ s12ryt-tg-api/
 │   │   ├── index.html               #   HTML 骨架 + SVG 導航圖標
 │   │   ├── app.js                   #   Vanilla JS SPA（hash 路由 + API 呼叫）
 │   │   └── style.css                #   暗色主題 CSS（響應式設計）
+│   ├── start.js                     # 容器通用啟動腳本（自動偵測模式）
 │   ├── package.json
 │   ├── tsconfig.json
-│   └── .env.example
+│   ├── .npmrc                       # npm 配置（低記憶體容器優化）
+│   ├── .env.example
+│   ├── CHANGELOG.md                 # 版本變更記錄
+│   ├── VERSION                      # 當前版本號
+│   ├── .node-version                # Node.js 版本釘定（Active LTS）
+│   ├── .nvmrc                       # nvm 版本指定
+│   └── scripts/
+│       └── release.ts               # 發布腳本（版本管理 + tag + GitHub Release）
 │
 └── README.md
 ```
