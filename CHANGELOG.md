@@ -2,6 +2,11 @@
 
 所有版本變更記錄。本檔案由 `npm run release` 自動維護。
 
+## [1.7.5] - 2026-06-19
+
+### 🐛 Bug Fixes
+- fix streaming requests not recording token usage — inject `stream_options.include_usage` on all three endpoints (`/v1/chat/completions`, `/v1/responses`, `/v1/messages`) and extract nested `response.usage` from SSE chunks
+
 ## [1.7.4] - 2026-06-19
 
 ### 🐛 Bug Fixes

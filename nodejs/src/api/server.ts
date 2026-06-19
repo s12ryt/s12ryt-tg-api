@@ -392,11 +392,14 @@ async function forwardStreamAndExtractUsage(
     if (!payload || payload === "[DONE]") return;
     try {
       const parsed = JSON.parse(payload);
-      if (parsed.usage) {
-        if (parsed.usage.prompt_tokens) inputTokens = parsed.usage.prompt_tokens;
-        if (parsed.usage.completion_tokens) outputTokens = parsed.usage.completion_tokens;
-        if (!inputTokens && parsed.usage.input_tokens) inputTokens = parsed.usage.input_tokens;
-        if (!outputTokens && parsed.usage.output_tokens) outputTokens = parsed.usage.output_tokens;
+      // Standard OpenAI usage (chat completions with include_usage)
+      // or Anthropic message_delta usage
+      const usage = parsed.usage ?? parsed.response?.usage;
+      if (usage) {
+        if (usage.prompt_tokens) inputTokens = usage.prompt_tokens;
+        if (usage.completion_tokens) outputTokens = usage.completion_tokens;
+        if (!inputTokens && usage.input_tokens) inputTokens = usage.input_tokens;
+        if (!outputTokens && usage.output_tokens) outputTokens = usage.output_tokens;
       }
     } catch { /* not JSON – skip */ }
   }
@@ -437,11 +440,12 @@ async function extractUsageFromProviderStream(
         if (!payload || payload === "[DONE]") continue;
         try {
           const parsed = JSON.parse(payload);
-          if (parsed.usage) {
-            if (parsed.usage.prompt_tokens) inputTokens = parsed.usage.prompt_tokens;
-            if (parsed.usage.completion_tokens) outputTokens = parsed.usage.completion_tokens;
-            if (!inputTokens && parsed.usage.input_tokens) inputTokens = parsed.usage.input_tokens;
-            if (!outputTokens && parsed.usage.output_tokens) outputTokens = parsed.usage.output_tokens;
+          const usage = parsed.usage ?? parsed.response?.usage;
+          if (usage) {
+            if (usage.prompt_tokens) inputTokens = usage.prompt_tokens;
+            if (usage.completion_tokens) outputTokens = usage.completion_tokens;
+            if (!inputTokens && usage.input_tokens) inputTokens = usage.input_tokens;
+            if (!outputTokens && usage.output_tokens) outputTokens = usage.output_tokens;
           }
         } catch { /* skip */ }
       }
@@ -462,11 +466,12 @@ async function extractUsageFromProviderStream(
       if (!payload || payload === "[DONE]") continue;
       try {
         const parsed = JSON.parse(payload);
-        if (parsed.usage) {
-          if (parsed.usage.prompt_tokens) inputTokens = parsed.usage.prompt_tokens;
-          if (parsed.usage.completion_tokens) outputTokens = parsed.usage.completion_tokens;
-          if (!inputTokens && parsed.usage.input_tokens) inputTokens = parsed.usage.input_tokens;
-          if (!outputTokens && parsed.usage.output_tokens) outputTokens = parsed.usage.output_tokens;
+        const usage = parsed.usage ?? parsed.response?.usage;
+        if (usage) {
+          if (usage.prompt_tokens) inputTokens = usage.prompt_tokens;
+          if (usage.completion_tokens) outputTokens = usage.completion_tokens;
+          if (!inputTokens && usage.input_tokens) inputTokens = usage.input_tokens;
+          if (!outputTokens && usage.output_tokens) outputTokens = usage.output_tokens;
         }
       } catch { /* skip */ }
     }
@@ -568,6 +573,11 @@ app.post(
           error: { message: `Model '${modelName}' is not allowed for this API key`, type: "permission_error" },
         });
         return;
+      }
+
+      // Ensure usage data is included in streaming responses (OpenAI requires stream_options)
+      if (body.stream === true) {
+        body.stream_options = { ...(body.stream_options || {}), include_usage: true };
       }
 
       // Dispatch with coding mode fallback
@@ -895,6 +905,11 @@ app.post(
 
       const isStream = chatBody.stream === true;
 
+      // Ensure usage data is included in streaming responses (OpenAI requires stream_options)
+      if (isStream) {
+        chatBody.stream_options = { ...((chatBody.stream_options as Record<string, unknown>) || {}), include_usage: true };
+      }
+
       // Dispatch with coding mode fallback
       const originalModelResp = modelName;
       let dispatch: DispatchResult;
@@ -1095,6 +1110,14 @@ app.post(
       }
 
       const isStream = chatBody.stream === true;
+
+      // Ensure streaming requests include usage in the final SSE chunk
+      if (isStream) {
+        (chatBody as typeof chatBody & { stream_options?: Record<string, unknown> }).stream_options = {
+          ...((chatBody as typeof chatBody & { stream_options?: Record<string, unknown> }).stream_options || {}),
+          include_usage: true,
+        };
+      }
 
       // Dispatch with coding mode fallback
       const originalModelMsg = modelName;
