@@ -181,8 +181,8 @@ vi.mock("../src/db/database.js", () => {
       dailyCostLimit: 0, monthlyCostLimit: 0,
       expiresAt: 0,
     })),
-    getDailyUsage: vi.fn(() => ({ totalTokens: 0, totalCost: 0 })),
-    getMonthlyUsage: vi.fn(() => ({ totalTokens: 0, totalCost: 0 })),
+    getDailyUsage: vi.fn(() => ({ total_input_tokens: 0, total_output_tokens: 0, total_cost: 0 })),
+    getMonthlyUsage: vi.fn(() => ({ total_input_tokens: 0, total_output_tokens: 0, total_cost: 0 })),
   };
 });
 

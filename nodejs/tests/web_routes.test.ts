@@ -64,8 +64,8 @@ vi.mock("../src/db/database.js", () => ({
   // Usage
   getUsageByUser: vi.fn(() => []),
   getTotalUsage: vi.fn(() => []),
-  getDailyUsage: vi.fn(() => ({ totalTokens: 0, totalCost: 0 })),
-  getMonthlyUsage: vi.fn(() => ({ totalTokens: 0, totalCost: 0 })),
+  getDailyUsage: vi.fn(() => ({ total_input_tokens: 0, total_output_tokens: 0, total_cost: 0 })),
+  getMonthlyUsage: vi.fn(() => ({ total_input_tokens: 0, total_output_tokens: 0, total_cost: 0 })),
   // Coding
   getCodingConfigByTgId: vi.fn(() => null),
   setCodingConfig: vi.fn(() => ({ is_active: 1, fallback_models: "", max_retries: 3 })),

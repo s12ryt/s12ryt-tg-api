@@ -2040,8 +2040,9 @@ export function invalidateEffectiveLimitsCache(userId?: number): void {
 // --- Quota queries (aggregate from usage table) ---
 
 export interface UsageQuota {
-  totalTokens: number;
-  totalCost: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_cost: number;
 }
 
 /**
@@ -2069,7 +2070,8 @@ function getPeriodUsage(period: "day" | "month", userId: number, apiKeyId: numbe
   if (apiKeyId !== null) {
     // Query by specific API key
     sql = `SELECT
-             COALESCE(SUM(input_tokens + output_tokens), 0) AS total_tokens,
+             COALESCE(SUM(input_tokens), 0) AS total_input_tokens,
+             COALESCE(SUM(output_tokens), 0) AS total_output_tokens,
              COALESCE(SUM(input_cost + output_cost), 0) AS total_cost
            FROM usage
            WHERE api_key_id = ? AND ${dateCondition.replace("u.", "")}`;
@@ -2077,7 +2079,8 @@ function getPeriodUsage(period: "day" | "month", userId: number, apiKeyId: numbe
   } else {
     // Query by user (all their API keys)
     sql = `SELECT
-             COALESCE(SUM(u.input_tokens + u.output_tokens), 0) AS total_tokens,
+             COALESCE(SUM(u.input_tokens), 0) AS total_input_tokens,
+             COALESCE(SUM(u.output_tokens), 0) AS total_output_tokens,
              COALESCE(SUM(u.input_cost + u.output_cost), 0) AS total_cost
            FROM usage u
            JOIN api_keys ak ON u.api_key_id = ak.id
@@ -2087,8 +2090,9 @@ function getPeriodUsage(period: "day" | "month", userId: number, apiKeyId: numbe
 
   const row = queryOne(sql, params);
   return {
-    totalTokens: Number(row?.total_tokens ?? 0),
-    totalCost: Number(row?.total_cost ?? 0),
+    total_input_tokens: Number(row?.total_input_tokens ?? 0),
+    total_output_tokens: Number(row?.total_output_tokens ?? 0),
+    total_cost: Number(row?.total_cost ?? 0),
   };
 }
 

@@ -918,12 +918,12 @@ describe("Permission System — Quota Queries", () => {
     const user = getUserByTgId(88888);
 
     const daily = getDailyUsage(user!.id, null);
-    expect(daily.totalTokens).toBe(0);
-    expect(daily.totalCost).toBe(0);
+    expect(daily.total_input_tokens + daily.total_output_tokens).toBe(0);
+    expect(daily.total_cost).toBe(0);
 
     const monthly = getMonthlyUsage(user!.id, null);
-    expect(monthly.totalTokens).toBe(0);
-    expect(monthly.totalCost).toBe(0);
+    expect(monthly.total_input_tokens + monthly.total_output_tokens).toBe(0);
+    expect(monthly.total_cost).toBe(0);
   });
 
   it("should calculate daily usage from usage table", () => {
@@ -947,8 +947,8 @@ describe("Permission System — Quota Queries", () => {
     flushUsageQueue();
 
     const daily = getDailyUsage(user!.id, null);
-    expect(daily.totalTokens).toBe(4500); // (1000+500) + (2000+1000)
-    expect(daily.totalCost).toBeCloseTo(0.09, 5); // (0.01+0.02) + (0.02+0.04)
+    expect(daily.total_input_tokens + daily.total_output_tokens).toBe(4500); // (1000+500) + (2000+1000)
+    expect(daily.total_cost).toBeCloseTo(0.09, 5); // (0.01+0.02) + (0.02+0.04)
   });
 
   it("should filter usage by specific api key", () => {
@@ -974,13 +974,13 @@ describe("Permission System — Quota Queries", () => {
 
     // Per-key usage
     const key1Daily = getDailyUsage(user!.id, apiKey1!.id);
-    expect(key1Daily.totalTokens).toBe(4000); // 3000+1000 only from key1
-    expect(key1Daily.totalCost).toBeCloseTo(0.10, 5);
+    expect(key1Daily.total_input_tokens + key1Daily.total_output_tokens).toBe(4000); // 3000+1000 only from key1
+    expect(key1Daily.total_cost).toBeCloseTo(0.10, 5);
 
     // Total user usage (all keys)
     const totalDaily = getDailyUsage(user!.id, null);
-    expect(totalDaily.totalTokens).toBe(11000); // 4000 + 7000
-    expect(totalDaily.totalCost).toBeCloseTo(0.30, 5);
+    expect(totalDaily.total_input_tokens + totalDaily.total_output_tokens).toBe(11000); // 4000 + 7000
+    expect(totalDaily.total_cost).toBeCloseTo(0.30, 5);
   });
 });
 

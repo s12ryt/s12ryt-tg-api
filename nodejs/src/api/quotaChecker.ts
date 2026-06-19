@@ -66,13 +66,14 @@ export function quotaCheckMiddleware(req: Request, res: Response, next: NextFunc
   }
 
   // --- Check daily token quota ---
-  if (limits.dailyTokenLimit > 0 && daily && daily.totalTokens >= limits.dailyTokenLimit) {
+  const dailyTokens = daily ? daily.total_input_tokens + daily.total_output_tokens : 0;
+  if (limits.dailyTokenLimit > 0 && daily && dailyTokens >= limits.dailyTokenLimit) {
     res.status(429).json({
       error: {
-        message: `Daily token quota exceeded (${daily.totalTokens}/${limits.dailyTokenLimit}). Resets at midnight UTC.`,
+        message: `Daily token quota exceeded (${dailyTokens}/${limits.dailyTokenLimit}). Resets at midnight UTC.`,
         type: "quota_error",
         code: "daily_token_exceeded",
-        used: daily.totalTokens,
+        used: dailyTokens,
         limit: limits.dailyTokenLimit,
       },
     });
@@ -80,13 +81,14 @@ export function quotaCheckMiddleware(req: Request, res: Response, next: NextFunc
   }
 
   // --- Check monthly token quota ---
-  if (limits.monthlyTokenLimit > 0 && monthly && monthly.totalTokens >= limits.monthlyTokenLimit) {
+  const monthlyTokens = monthly ? monthly.total_input_tokens + monthly.total_output_tokens : 0;
+  if (limits.monthlyTokenLimit > 0 && monthly && monthlyTokens >= limits.monthlyTokenLimit) {
     res.status(429).json({
       error: {
-        message: `Monthly token quota exceeded (${monthly.totalTokens}/${limits.monthlyTokenLimit}). Resets at the start of next month.`,
+        message: `Monthly token quota exceeded (${monthlyTokens}/${limits.monthlyTokenLimit}). Resets at the start of next month.`,
         type: "quota_error",
         code: "monthly_token_exceeded",
-        used: monthly.totalTokens,
+        used: monthlyTokens,
         limit: limits.monthlyTokenLimit,
       },
     });
@@ -94,13 +96,13 @@ export function quotaCheckMiddleware(req: Request, res: Response, next: NextFunc
   }
 
   // --- Check daily cost quota ---
-  if (limits.dailyCostLimit > 0 && daily && daily.totalCost >= limits.dailyCostLimit) {
+  if (limits.dailyCostLimit > 0 && daily && daily.total_cost >= limits.dailyCostLimit) {
     res.status(429).json({
       error: {
-        message: `Daily cost quota exceeded ($${daily.totalCost.toFixed(4)}/$${limits.dailyCostLimit}). Resets at midnight UTC.`,
+        message: `Daily cost quota exceeded ($${daily.total_cost.toFixed(4)}/$${limits.dailyCostLimit}). Resets at midnight UTC.`,
         type: "quota_error",
         code: "daily_cost_exceeded",
-        used: daily.totalCost,
+        used: daily.total_cost,
         limit: limits.dailyCostLimit,
       },
     });
@@ -108,13 +110,13 @@ export function quotaCheckMiddleware(req: Request, res: Response, next: NextFunc
   }
 
   // --- Check monthly cost quota ---
-  if (limits.monthlyCostLimit > 0 && monthly && monthly.totalCost >= limits.monthlyCostLimit) {
+  if (limits.monthlyCostLimit > 0 && monthly && monthly.total_cost >= limits.monthlyCostLimit) {
     res.status(429).json({
       error: {
-        message: `Monthly cost quota exceeded ($${monthly.totalCost.toFixed(4)}/$${limits.monthlyCostLimit}). Resets at the start of next month.`,
+        message: `Monthly cost quota exceeded ($${monthly.total_cost.toFixed(4)}/$${limits.monthlyCostLimit}). Resets at the start of next month.`,
         type: "quota_error",
         code: "monthly_cost_exceeded",
-        used: monthly.totalCost,
+        used: monthly.total_cost,
         limit: limits.monthlyCostLimit,
       },
     });

@@ -614,8 +614,8 @@ async function viewUserLimits(
 
   let text2 = `👤 用戶 ${userWithLimits.username || "?"} (ID: ${internalUserId})\n\n`;
   text2 += effectiveLimitsText(userLimits);
-  text2 += `\n\n📊 **今日用量**: ${dailyUsage.totalTokens} tokens, ${formatCost(dailyUsage.totalCost)}`;
-  text2 += `\n📊 **本月用量**: ${monthlyUsage.totalTokens} tokens, ${formatCost(monthlyUsage.totalCost)}`;
+  text2 += `\n\n📊 **今日用量**: ${dailyUsage.total_input_tokens + dailyUsage.total_output_tokens} tokens, ${formatCost(dailyUsage.total_cost)}`;
+  text2 += `\n📊 **本月用量**: ${monthlyUsage.total_input_tokens + monthlyUsage.total_output_tokens} tokens, ${formatCost(monthlyUsage.total_cost)}`;
 
   // Show per-key limits
   const keys = await conversation.external(() => getKeysByUser(internalUserId));
@@ -690,8 +690,8 @@ async function handleMyLimits(ctx: MyContext): Promise<void> {
 
   let text = `📊 **我的限制**\n\n`;
   text += effectiveLimitsText(userLimits);
-  text += `\n\n📈 **今日用量**: ${dailyUsage.totalTokens} tokens, ${formatCost(dailyUsage.totalCost)}`;
-  text += `\n📈 **本月用量**: ${monthlyUsage.totalTokens} tokens, ${formatCost(monthlyUsage.totalCost)}`;
+  text += `\n\n📈 **今日用量**: ${dailyUsage.total_input_tokens + dailyUsage.total_output_tokens} tokens, ${formatCost(dailyUsage.total_cost)}`;
+  text += `\n📈 **本月用量**: ${monthlyUsage.total_input_tokens + monthlyUsage.total_output_tokens} tokens, ${formatCost(monthlyUsage.total_cost)}`;
 
   const keys = getKeysByUser(userId);
   if (keys.length > 0) {
@@ -702,7 +702,7 @@ async function handleMyLimits(ctx: MyContext): Promise<void> {
       text += `\nKey #${k.id} (${k.key.substring(0, 15)}...):\n`;
       text += `  RPM: ${formatLimit(keyLimits.rpm)}, 並發: ${formatLimit(keyLimits.concurrency)}\n`;
       text += `  過期: ${formatExpiry(keyLimits.expiresAt)}\n`;
-      text += `  今日: ${keyDaily.totalTokens} tokens, ${formatCost(keyDaily.totalCost)}\n`;
+      text += `  今日: ${keyDaily.total_input_tokens + keyDaily.total_output_tokens} tokens, ${formatCost(keyDaily.total_cost)}\n`;
     }
   }
 

@@ -32,8 +32,8 @@ let mockLimits = {
   expiresAt: null as string | null,
 };
 
-let mockDailyUsage = { totalTokens: 0, totalCost: 0 };
-let mockMonthlyUsage = { totalTokens: 0, totalCost: 0 };
+let mockDailyUsage = { total_input_tokens: 0, total_output_tokens: 0, total_cost: 0 };
+let mockMonthlyUsage = { total_input_tokens: 0, total_output_tokens: 0, total_cost: 0 };
 
 vi.mock("../src/db/database.js", () => ({
   getCachedEffectiveLimits: vi.fn(() => ({ ...mockLimits })),
@@ -112,8 +112,8 @@ describe("quotaCheckMiddleware", () => {
       monthlyCostLimit: 0,
       expiresAt: null,
     };
-    mockDailyUsage = { totalTokens: 0, totalCost: 0 };
-    mockMonthlyUsage = { totalTokens: 0, totalCost: 0 };
+    mockDailyUsage = { total_input_tokens: 0, total_output_tokens: 0, total_cost: 0 };
+    mockMonthlyUsage = { total_input_tokens: 0, total_output_tokens: 0, total_cost: 0 };
     vi.clearAllMocks();
   });
 
@@ -155,7 +155,7 @@ describe("quotaCheckMiddleware", () => {
 
   it("should return 429 when daily token quota is exceeded", () => {
     mockLimits.dailyTokenLimit = 1000;
-    mockDailyUsage.totalTokens = 1500;
+    mockDailyUsage.total_input_tokens = 1500;
 
     const req = makeReq(TEST_AUTH);
     const res = makeRes();
@@ -173,7 +173,7 @@ describe("quotaCheckMiddleware", () => {
 
   it("should allow request when daily token usage is within quota", () => {
     mockLimits.dailyTokenLimit = 1000;
-    mockDailyUsage.totalTokens = 500;
+    mockDailyUsage.total_input_tokens = 500;
 
     const req = makeReq(TEST_AUTH);
     const res = makeRes();
@@ -186,7 +186,7 @@ describe("quotaCheckMiddleware", () => {
 
   it("should return 429 when monthly token quota is exceeded", () => {
     mockLimits.monthlyTokenLimit = 10000;
-    mockMonthlyUsage.totalTokens = 12000;
+    mockMonthlyUsage.total_input_tokens = 12000;
 
     const req = makeReq(TEST_AUTH);
     const res = makeRes();
@@ -203,7 +203,7 @@ describe("quotaCheckMiddleware", () => {
 
   it("should return 429 when daily cost quota is exceeded", () => {
     mockLimits.dailyCostLimit = 1.0;
-    mockDailyUsage.totalCost = 1.5;
+    mockDailyUsage.total_cost = 1.5;
 
     const req = makeReq(TEST_AUTH);
     const res = makeRes();
@@ -218,7 +218,7 @@ describe("quotaCheckMiddleware", () => {
 
   it("should return 429 when monthly cost quota is exceeded", () => {
     mockLimits.monthlyCostLimit = 10.0;
-    mockMonthlyUsage.totalCost = 15.0;
+    mockMonthlyUsage.total_cost = 15.0;
 
     const req = makeReq(TEST_AUTH);
     const res = makeRes();
@@ -234,8 +234,8 @@ describe("quotaCheckMiddleware", () => {
   it("should check daily token before other quotas", () => {
     mockLimits.dailyTokenLimit = 100;
     mockLimits.monthlyTokenLimit = 1000;
-    mockDailyUsage.totalTokens = 150;
-    mockMonthlyUsage.totalTokens = 500;
+    mockDailyUsage.total_input_tokens = 150;
+    mockMonthlyUsage.total_input_tokens = 500;
 
     const req = makeReq(TEST_AUTH);
     const res = makeRes();

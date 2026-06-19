@@ -2,15 +2,15 @@
 
 所有版本變更記錄。本檔案由 `npm run release` 自動維護。
 
+## [1.7.6] - 2026-06-20
+
+### 🐛 Bug Fixes
+- fix dashboard showing all zeros — align `UsageQuota` interface fields with frontend expectations (`total_input_tokens` / `total_output_tokens` / `total_cost` instead of camelCase `totalTokens` / `totalCost`), split `getPeriodUsage` SQL into separate `SUM(input_tokens)` and `SUM(output_tokens)`
+
 ## [1.7.5] - 2026-06-19
 
 ### 🐛 Bug Fixes
-- inject stream_options.include_usage on all endpoints to record token usage (49ae69e)
-
-## [1.7.5] - 2026-06-19
-
-### 🐛 Bug Fixes
-- fix streaming requests not recording token usage — inject `stream_options.include_usage` on all three endpoints (`/v1/chat/completions`, `/v1/responses`, `/v1/messages`) and extract nested `response.usage` from SSE chunks
+- fix streaming requests not recording token usage — inject `stream_options.include_usage` on all three endpoints (`/v1/chat/completions`, `/v1/responses`, `/v1/messages`) and extract nested `response.usage` from SSE chunks (49ae69e)
 
 ## [1.7.4] - 2026-06-19
 
