@@ -2,6 +2,11 @@
 
 所有版本變更記錄。本檔案由 `npm run release` 自動維護。
 
+## [1.7.6] - 2026-06-19
+
+### 🐛 Bug Fixes
+- align UsageQuota fields with frontend expectations (v1.7.6) (5ad8dca)
+
 ## [1.7.6] - 2026-06-20
 
 ### 🐛 Bug Fixes
