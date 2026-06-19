@@ -2,6 +2,11 @@
 
 所有版本變更記錄。本檔案由 `npm run release` 自動維護。
 
+## [1.7.4] - 2026-06-19
+
+### 🐛 Bug Fixes
+- repair admin global usage page and per-model cost calculation (3f43bde)
+
 ## [1.7.3] - 2026-06-19
 
 ### ✨ Features
