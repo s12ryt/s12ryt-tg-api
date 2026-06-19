@@ -11,7 +11,7 @@
 - **OpenAI 相容 API** — 對外暴露 `/v1/chat/completions`、`/v1/responses` 端點，可直接替換現有 OpenAI 客戶端
 - **Anthropic 相容 API** — 提供 `/v1/messages` 端點，相容 Anthropic Messages API 格式
 - **格式自動轉換** — 三種 API 格式（Chat Completions / Responses / Messages）之間自動雙向轉換，任一端點可路由到任意供應商
-- **Thinking Effort（推理強度）** — 支援透過 model 名稱後綴（如 `o3(high)`）或請求參數（`reasoning_effort` / `thinking_effort`）指定推理強度（high / medium / low），自動映射到各供應商的原生格式
+- **Thinking Effort（推理強度）** — 支援透過 model 名稱後綴（如 `o3(high)`）或請求參數（`reasoning_effort` / `thinking_effort`）指定推理強度（6 級：`xhigh` / `high` / `medium` / `low` / `minimal` / `none`），自動映射到各供應商的原生格式
 - **API 協議自動偵測** — 新增供應商時自動 ping 各端點，以 HTTP 狀態碼 + 信心等級（high/medium/low）分析，並自動推薦最佳類型
 - **串流支援 (SSE)** — 支援 Server-Sent Events 即時串流回應
 
@@ -227,7 +227,7 @@ curl http://localhost:8000/v1/chat/completions \
 
 ### Thinking Effort（推理強度）
 
-透過三種方式指定推理強度（`high` / `medium` / `low`），系統會自動映射到各供應商的原生格式：
+透過三種方式指定推理強度（6 級：`xhigh` / `high` / `medium` / `low` / `minimal` / `none`），系統會自動映射到各供應商的原生格式。無效的後綴（如 `model(extreme)`）會返回 HTTP 400 錯誤而非靜默失敗：
 
 | 方式 | 範例 | 優先級 |
 |------|------|--------|
@@ -239,14 +239,17 @@ curl http://localhost:8000/v1/chat/completions \
 
 **各供應商映射：**
 
-| 供應商 | high | medium | low |
-|--------|------|--------|-----|
-| OpenAI Chat | `reasoning_effort: "high"` | `"medium"` | `"low"` |
-| OpenAI Responses | `reasoning: {effort: "high"}` | `"medium"` | `"low"` |
-| Anthropic | `thinking: {budget_tokens: 32048}` | `16000` | `5000` |
-| Google | `thinkingConfig: {thinkingBudget: 24576}` | `12288` | `0` |
+OpenAI 系（Chat / Responses）直接 1:1 傳遞 level 字串；Anthropic 用 `budget_tokens` 連續值（`none` → `{type:"disabled"}`）；Google 同時設 `thinkingBudget`（2.5）和 `thinkingLevel`（3.x）。
 
-> Anthropic 供應商會自動確保 `max_tokens > budget_tokens`（必要時提升 max_tokens）。
+| 供應商 | xhigh | high | medium | low | minimal | none |
+|--------|-------|------|--------|-----|---------|------|
+| OpenAI Chat | `"xhigh"` | `"high"` | `"medium"` | `"low"` | `"minimal"` | `"none"` |
+| OpenAI Responses | `effort:"xhigh"` | `"high"` | `"medium"` | `"low"` | `"minimal"` | `"none"` |
+| Anthropic budget | `64000` | `32048` | `16000` | `5000` | `1024` | `disabled` |
+| Google budget | `32768` | `24576` | `12288` | `2048` | `512` | `0` |
+| Google level | `"high"` | `"high"` | `"medium"` | `"low"` | `"minimal"` | — |
+
+> Anthropic 供應商會自動確保 `max_tokens > budget_tokens`（必要時提升 max_tokens）。`none` 等級對 Anthropic 設為 `{type:"disabled"}`，對 Google 設 `thinkingBudget:0`（不安裝 thinkingLevel）。
 
 **範例 — 使用 model 後綴：**
 

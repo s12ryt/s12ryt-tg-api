@@ -5,45 +5,70 @@
  * 1. Model name suffix: "o3(high)", "claude-sonnet(medium)", "gemini-2.5-pro(low)"
  * 2. Request body parameter: reasoning_effort or thinking_effort
  *
+ * Six unified levels: xhigh / high / medium / low / minimal / none
+ *
  * Normalizes to a unified `thinking_effort` field on the body, then each provider
  * maps it to the upstream-specific format:
- * - OpenAI Chat      → reasoning_effort: "high"
+ * - OpenAI Chat      → reasoning_effort: "high"  (direct 1:1 for all 6 levels)
  * - OpenAI Responses → reasoning: { effort: "high" }
- * - Anthropic        → thinking: { type: "enabled", budget_tokens: N }
- * - Google Gemini    → generationConfig.thinkingConfig.thinkingBudget: N
+ * - Anthropic        → thinking: { type: "enabled", budget_tokens: N } or { type: "disabled" } for none
+ * - Google Gemini    → generationConfig.thinkingConfig.thinkingBudget + thinkingLevel (Gemini 3.x)
  */
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-export type ThinkingLevel = "high" | "medium" | "low";
+export type ThinkingLevel = "xhigh" | "high" | "medium" | "low" | "minimal" | "none";
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 /** Regex for model suffix: model_name(level) — allows optional whitespace */
-const MODEL_SUFFIX_RE = /^(.+?)\s*\(\s*(high|medium|low)\s*\)\s*$/i;
+const MODEL_SUFFIX_RE = /^(.+?)\s*\(\s*(xhigh|high|medium|low|minimal|none)\s*\)\s*$/i;
+
+/** Regex to detect ANY (word) suffix — used to flag invalid thinking levels */
+const ANY_SUFFIX_RE = /^(.+?)\s*\(\s*([a-zA-Z]+)\s*\)\s*$/;
 
 /**
  * Anthropic thinking budget_tokens for each level.
  * Anthropic requires max_tokens > budget_tokens.
+ * minimal uses 1024 (Anthropic minimum).
+ * "none" is handled separately as { type: "disabled" }.
  */
-export const ANTHROPIC_THINKING_BUDGET: Record<ThinkingLevel, number> = {
+export const ANTHROPIC_THINKING_BUDGET: Record<Exclude<ThinkingLevel, "none">, number> = {
+  xhigh: 64000,
   high: 32048,
   medium: 16000,
   low: 5000,
+  minimal: 1024,
 };
 
 /**
- * Google Gemini thinkingBudget for each level.
- * 0 means "dynamic" (model decides) — Gemini-specific behavior.
+ * Google Gemini thinkingBudget for each level (Gemini 2.5 models).
+ * 0 = disabled.
  */
 export const GOOGLE_THINKING_BUDGET: Record<ThinkingLevel, number> = {
+  xhigh: 32768,
   high: 24576,
   medium: 12288,
-  low: 0,
+  low: 2048,
+  minimal: 512,
+  none: 0,
+};
+
+/**
+ * Google Gemini thinkingLevel enum (Gemini 3.x models).
+ * Mapped from our unified levels. 'none' has no thinkingLevel (uses budget=0).
+ * 'xhigh' maps to "high" (Gemini max available).
+ */
+export const GOOGLE_THINKING_LEVEL: Partial<Record<ThinkingLevel, string>> = {
+  xhigh: "high",
+  high: "high",
+  medium: "medium",
+  low: "low",
+  minimal: "minimal",
 };
 
 // ---------------------------------------------------------------------------
@@ -54,20 +79,32 @@ export const GOOGLE_THINKING_BUDGET: Record<ThinkingLevel, number> = {
  * Parse a model name that may contain a thinking-level suffix.
  *
  * Examples:
- *   "o3(high)"            → { model: "o3", thinkingLevel: "high" }
+ *   "o3(high)"              → { model: "o3", thinkingLevel: "high" }
  *   "claude-sonnet(medium)" → { model: "claude-sonnet", thinkingLevel: "medium" }
  *   "gemini-2.5-pro( low )" → { model: "gemini-2.5-pro", thinkingLevel: "low" }
- *   "gpt-4o"              → { model: "gpt-4o", thinkingLevel: undefined }
+ *   "gpt-5.1(xhigh)"        → { model: "gpt-5.1", thinkingLevel: "xhigh" }
+ *   "gpt-4o(none)"          → { model: "gpt-4o", thinkingLevel: "none" }
+ *   "model(extreme)"        → { model: "model", invalidLevel: "extreme" }
+ *   "gpt-4o"                → { model: "gpt-4o" }
  */
 export function parseModelThinkingSuffix(model: string): {
   model: string;
   thinkingLevel?: ThinkingLevel;
+  invalidLevel?: string;
 } {
   const match = model.match(MODEL_SUFFIX_RE);
   if (match) {
     return {
       model: match[1].trim(),
       thinkingLevel: match[2].toLowerCase() as ThinkingLevel,
+    };
+  }
+  // Detect any (word) suffix that looks like a thinking level attempt
+  const anyMatch = model.match(ANY_SUFFIX_RE);
+  if (anyMatch) {
+    return {
+      model: anyMatch[1].trim(),
+      invalidLevel: anyMatch[2],
     };
   }
   return { model };
@@ -86,28 +123,35 @@ export function parseModelThinkingSuffix(model: string): {
 export function extractThinkingLevel(
   body: Record<string, any>,
 ): ThinkingLevel | undefined {
+  const VALID_LEVELS = new Set([
+    "xhigh", "high", "medium", "low", "minimal", "none",
+  ]);
+
   // 1. reasoning_effort (OpenAI standard)
   if (typeof body.reasoning_effort === "string") {
     const lvl = body.reasoning_effort.toLowerCase();
-    if (lvl === "high" || lvl === "medium" || lvl === "low") return lvl;
+    if (VALID_LEVELS.has(lvl)) return lvl as ThinkingLevel;
   }
 
   // 2. Custom thinking_effort (our unified field)
   if (typeof body.thinking_effort === "string") {
     const lvl = body.thinking_effort.toLowerCase();
-    if (lvl === "high" || lvl === "medium" || lvl === "low") return lvl;
+    if (VALID_LEVELS.has(lvl)) return lvl as ThinkingLevel;
   }
 
   // 3. Anthropic thinking format — reverse-map budget_tokens to level
   if (body.thinking && typeof body.thinking === "object") {
+    if (body.thinking.type === "disabled") return "none";
     if (
       body.thinking.type === "enabled" &&
       typeof body.thinking.budget_tokens === "number"
     ) {
       const b = body.thinking.budget_tokens;
+      if (b >= 48000) return "xhigh";
       if (b >= 24000) return "high";
       if (b >= 10000) return "medium";
-      return "low";
+      if (b >= 3000) return "low";
+      return "minimal";
     }
   }
 
@@ -126,6 +170,9 @@ export function extractThinkingLevel(
  * 3. Set body.model to the real model name (suffix stripped)
  * 4. Set body.thinking_effort to the resolved level (if any)
  *
+ * Throws Error if the model suffix contains an invalid thinking level
+ * (e.g. "model(extreme)" → throws "Invalid thinking level 'extreme'...").
+ *
  * This MUST be called BEFORE lookupModelDb / dispatchWithFallback /
  * isModelAllowedForRequest, because those use body.model for DB lookup.
  *
@@ -136,11 +183,18 @@ export function preprocessThinking(body: Record<string, any>): void {
   if (typeof rawModel !== "string" || !rawModel) return;
 
   // Step 1: Parse model suffix
-  const { model: realModel, thinkingLevel: suffixLevel } =
+  const { model: realModel, thinkingLevel: suffixLevel, invalidLevel } =
     parseModelThinkingSuffix(rawModel);
 
-  if (suffixLevel) {
+  if (suffixLevel || invalidLevel) {
     body.model = realModel;
+  }
+
+  // Throw on invalid level suffix
+  if (invalidLevel) {
+    throw new Error(
+      `Invalid thinking level "${invalidLevel}". Supported levels: xhigh, high, medium, low, minimal, none`,
+    );
   }
 
   // Step 2: Resolve thinking level — suffix takes priority over body params
@@ -159,12 +213,18 @@ export function preprocessThinking(body: Record<string, any>): void {
 /**
  * Inject thinking params into an Anthropic (Claude) request body.
  * Maps thinking_effort → thinking: { type: "enabled", budget_tokens: N }
+ *                        or thinking: { type: "disabled" } for "none"
  * Ensures max_tokens > budget_tokens (Anthropic requirement).
  */
 export function injectForAnthropic(
   body: Record<string, any>,
   level: ThinkingLevel,
 ): void {
+  if (level === "none") {
+    body.thinking = { type: "disabled" };
+    return;
+  }
+
   const budgetTokens = ANTHROPIC_THINKING_BUDGET[level];
   body.thinking = { type: "enabled", budget_tokens: budgetTokens };
 
@@ -179,6 +239,7 @@ export function injectForAnthropic(
 /**
  * Inject thinking params into an OpenAI Chat Completions request body.
  * Maps thinking_effort → reasoning_effort: "high"
+ * OpenAI natively supports all 6 levels.
  */
 export function injectForOpenAIChat(
   body: Record<string, any>,
@@ -190,6 +251,7 @@ export function injectForOpenAIChat(
 /**
  * Inject thinking params into an OpenAI Responses API request body.
  * Maps thinking_effort → reasoning: { effort: "high" }
+ * OpenAI natively supports all 6 levels.
  */
 export function injectForOpenAIResponse(
   body: Record<string, any>,
@@ -200,7 +262,8 @@ export function injectForOpenAIResponse(
 
 /**
  * Inject thinking params into a Google Gemini request body.
- * Maps thinking_effort → generationConfig.thinkingConfig.thinkingBudget
+ * Maps thinking_effort → generationConfig.thinkingConfig.thinkingBudget (Gemini 2.5)
+ *                      + generationConfig.thinkingConfig.thinkingLevel (Gemini 3.x)
  */
 export function injectForGoogle(
   body: Record<string, any>,
@@ -210,6 +273,14 @@ export function injectForGoogle(
   if (!body.generationConfig.thinkingConfig) {
     body.generationConfig.thinkingConfig = {};
   }
+
+  // Set thinkingBudget (for Gemini 2.5 models)
   body.generationConfig.thinkingConfig.thinkingBudget =
     GOOGLE_THINKING_BUDGET[level];
+
+  // Set thinkingLevel (for Gemini 3.x models) — skip for 'none'
+  const thinkingLevel = GOOGLE_THINKING_LEVEL[level];
+  if (thinkingLevel) {
+    body.generationConfig.thinkingConfig.thinkingLevel = thinkingLevel;
+  }
 }

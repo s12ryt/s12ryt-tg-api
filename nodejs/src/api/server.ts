@@ -541,7 +541,17 @@ app.post(
     try {
       const body = req.body;
       // Parse thinking level from model suffix (e.g. "o3(high)") or body params
-      preprocessThinking(body);
+      try {
+        preprocessThinking(body);
+      } catch (thinkErr) {
+        res.status(400).json({
+          error: {
+            message: thinkErr instanceof Error ? thinkErr.message : String(thinkErr),
+            type: "invalid_request_error",
+          },
+        });
+        return;
+      }
       console.log(`[${formatTimestamp()}] POST /v1/chat/completions model=${body.model ?? "?"} stream=${body.stream === true}`);
 
       const modelName: string = body.model ?? "";
@@ -683,7 +693,17 @@ app.post(
     try {
       const body = req.body;
       // Parse thinking level from model suffix (e.g. "o3(high)") or body params
-      preprocessThinking(body);
+      try {
+        preprocessThinking(body);
+      } catch (thinkErr) {
+        res.status(400).json({
+          error: {
+            message: thinkErr instanceof Error ? thinkErr.message : String(thinkErr),
+            type: "invalid_request_error",
+          },
+        });
+        return;
+      }
       console.log(`[${formatTimestamp()}] POST /v1/responses model=${body.model ?? "?"} stream=${body.stream === true}`);
 
       // Validate required fields
@@ -1020,7 +1040,18 @@ app.post(
     try {
       const body = req.body;
       // Parse thinking level from model suffix (e.g. "claude-sonnet(high)") or body params
-      preprocessThinking(body);
+      try {
+        preprocessThinking(body);
+      } catch (thinkErr) {
+        res.status(400).json({
+          type: "error",
+          error: {
+            type: "invalid_request_error",
+            message: thinkErr instanceof Error ? thinkErr.message : String(thinkErr),
+          },
+        });
+        return;
+      }
       console.log(`[${formatTimestamp()}] POST /v1/messages model=${body.model ?? "?"} stream=${body.stream === true}`);
 
       // Validate required fields

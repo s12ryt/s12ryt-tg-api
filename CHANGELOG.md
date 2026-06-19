@@ -27,6 +27,8 @@
 ## [Unreleased]
 
 ### ✨ Features
+- expand thinking effort from 3 levels (high/medium/low) to 6 (xhigh/high/medium/low/minimal/none) with full OpenAI/Anthropic/Google mapping
+- return HTTP 400 with clear error message for invalid thinking level suffix (e.g. `model(extreme)`) instead of silent failure
 - support Node.js 22 LTS (broaden engines from >=24 to >=22, CI matrix tests 22+24)
 
 ### ⚡ Performance
