@@ -2,6 +2,20 @@
 
 所有版本變更記錄。本檔案由 `npm run release` 自動維護。
 
+## [1.7.3] - 2026-06-19
+
+### ✨ Features
+- expand thinking effort to 6 levels (xhigh/high/medium/low/minimal/none) (5a6dc87)
+- support Node.js 22 LTS (broaden engines, CI matrix 22+24) (bda6620)
+
+### 🐛 Bug Fixes
+- add BUILD_ONLY mode for CI/Netlify build environments (04128e3)
+- add global setup for env vars in CI (d20727b)
+- correct .nvmrc path for setup-node action (8f48599)
+
+### 📦 Other
+- Revert "fix(start): add BUILD_ONLY mode for CI/Netlify build environments" (d4294c7)
+
 ## [1.7.2] - 2026-06-18
 
 ### ✨ Features
