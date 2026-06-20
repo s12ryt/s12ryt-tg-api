@@ -2105,3 +2105,199 @@ export function isExpired(expiresAt: string | null): boolean {
   const expiry = new Date(expiresAt + "Z"); // treat as UTC
   return expiry.getTime() < Date.now();
 }
+
+// ---------------------------------------------------------------------------
+// Backup / Restore
+// ---------------------------------------------------------------------------
+
+/**
+ * Whitelist of tables included in backup/restore.
+ * Order = insertion order (parents before children).
+ * Table names are compile-time constants — never derived from user input.
+ */
+const BACKUP_TABLES = [
+  "providers",
+  "users",
+  "api_keys",
+  "usage",
+  "settings",
+  "model_prices",
+  "coding_configs",
+  "model_restrictions",
+  "user_groups",
+  "model_mappings",
+] as const;
+
+export interface BackupData {
+  version: 1;
+  exportedAt: string;
+  tables: Record<string, Record<string, unknown>[]>;
+}
+
+export interface BackupSummary {
+  version: number;
+  exportedAt: string;
+  counts: Record<string, number>;
+}
+
+/**
+ * Convert a SqlValue to a JSON-serializable value.
+ * bigint → number (SQLite integers fit in JS safe-integer range for this project)
+ * Uint8Array (BLOB) → number[] (round-tripped via toSqlValue on import)
+ */
+function toJsonValue(val: SqlValue): unknown {
+  if (val === null) return null;
+  if (typeof val === "bigint") return Number(val);
+  if (val instanceof Uint8Array) return Array.from(val);
+  return val;
+}
+
+/**
+ * Convert a deserialized JSON value back to a SqlValue for INSERT.
+ */
+function toSqlValue(val: unknown): SqlValue {
+  if (val === null || val === undefined) return null;
+  if (typeof val === "boolean") return val ? 1 : 0;
+  if (typeof val === "number") return val;
+  if (typeof val === "string") return val;
+  if (Array.isArray(val)) return new Uint8Array(val);
+  // Fallback: stringify anything unexpected
+  return String(val);
+}
+
+/**
+ * Export all backup tables as a JSON-serializable object.
+ * Flushes pending usage writes first to ensure completeness.
+ */
+export function exportDatabase(): BackupData {
+  flushUsageQueue();
+  const tables: Record<string, Record<string, unknown>[]> = {};
+  for (const table of BACKUP_TABLES) {
+    const rows = queryAll(`SELECT * FROM ${table}`);
+    tables[table] = rows.map((row) => {
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(row)) {
+        out[k] = toJsonValue(v);
+      }
+      return out;
+    });
+  }
+  return {
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    tables,
+  };
+}
+
+/**
+ * Extract a compact summary from backup data for display.
+ */
+export function getBackupSummary(data: BackupData): BackupSummary {
+  const counts: Record<string, number> = {};
+  for (const [table, rows] of Object.entries(data.tables)) {
+    counts[table] = Array.isArray(rows) ? rows.length : 0;
+  }
+  return {
+    version: data.version ?? 1,
+    exportedAt: data.exportedAt ?? "unknown",
+    counts,
+  };
+}
+
+/**
+ * Get column names for a table via PRAGMA table_info.
+ * Used to validate imported row keys against the actual schema.
+ */
+function getTableColumns(tableName: string): string[] {
+  const d = getDb();
+  const result = d.exec(`PRAGMA table_info(${tableName})`);
+  if (!result.length) return [];
+  return result[0].values.map((r) => String(r[1]));
+}
+
+/**
+ * Import (restore) a backup, overwriting all existing data.
+ *
+ * Uses a single transaction with foreign_keys disabled; rolls back on error.
+ * After success: rebuilds provider cache, clears circuit-breaker state, saves to disk.
+ *
+ * @throws Error if the backup format is invalid or the restore fails.
+ */
+export function importDatabase(data: BackupData): void {
+  if (!data || typeof data !== "object" || typeof data.tables !== "object" || data.tables === null) {
+    throw new Error("Invalid backup format: missing or invalid 'tables' object");
+  }
+
+  // Flush pending writes before overwriting
+  flushUsageQueue();
+
+  const d = getDb();
+
+  try {
+    d.exec("PRAGMA foreign_keys = OFF");
+    d.exec("BEGIN");
+
+    // Wipe all backup tables and reset AUTOINCREMENT sequences
+    for (const table of BACKUP_TABLES) {
+      d.exec(`DELETE FROM ${table}`);
+      // sqlite_sequence may not contain every table; ignoring unknown rows is safe
+      try {
+        d.exec(`DELETE FROM sqlite_sequence WHERE name = '${table}'`);
+      } catch {
+        // sqlite_sequence table might not exist yet — ignore
+      }
+    }
+
+    // Re-insert rows for each table
+    for (const table of BACKUP_TABLES) {
+      const rows = (data.tables as Record<string, unknown>)[table];
+      if (!Array.isArray(rows) || rows.length === 0) continue;
+
+      const columns = getTableColumns(table);
+      if (columns.length === 0) continue;
+
+      for (const row of rows) {
+        if (typeof row !== "object" || row === null) continue;
+        const rowRecord = row as Record<string, unknown>;
+        // Only include columns present in both the schema and the row.
+        // Missing columns let SQLite use schema DEFAULT values
+        // (e.g. key_strategy='failover' for backward-compatible old backups).
+        const presentCols = columns.filter((c) => c in rowRecord);
+        if (presentCols.length === 0) continue;
+        const colList = presentCols.map((c) => `"${c}"`).join(", ");
+        const placeholders = presentCols.map(() => "?").join(", ");
+        const sql = `INSERT INTO ${table} (${colList}) VALUES (${placeholders})`;
+        const values: SqlValue[] = presentCols.map((c) => toSqlValue(rowRecord[c]));
+        d.run(sql, values);
+      }
+    }
+
+    d.exec("COMMIT");
+  } catch (err) {
+    try {
+      d.exec("ROLLBACK");
+    } catch {
+      // Ignore rollback errors
+    }
+    throw err;
+  } finally {
+    try {
+      d.exec("PRAGMA foreign_keys = ON");
+    } catch {
+      // Ignore
+    }
+  }
+
+  // Post-restore: rebuild caches and persist
+  rebuildProviderCache();
+  // Clear circuit-breaker state for all restored providers (fresh start)
+  const restoredProviders = data.tables["providers"];
+  if (Array.isArray(restoredProviders)) {
+    for (const row of restoredProviders) {
+      if (row && typeof row === "object" && typeof row.id === "number") {
+        clearProviderKeyState(row.id);
+      }
+    }
+  }
+  saveDb();
+}

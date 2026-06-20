@@ -65,12 +65,17 @@ import {
   getDailyUsage,
   getMonthlyUsage,
   isExpired,
+  // Backup / Restore
+  exportDatabase,
+  importDatabase,
+  getBackupSummary,
   // Types
   type Provider,
   type User,
   type ApiKey,
   type UsageRecord,
   type TotalUsage,
+  type BackupData,
 } from "../src/db/database.js";
 
 // ---------------------------------------------------------------------------
@@ -998,5 +1003,278 @@ describe("Permission System — isExpired", () => {
 
   it("should return true for past date", () => {
     expect(isExpired("2000-01-01T00:00:00")).toBe(true);
+  });
+});
+
+// ===========================================================================
+// Backup / Restore
+// ===========================================================================
+describe("Backup / Restore", () => {
+  beforeEach(async () => {
+    await initDbAsync(makeTempDbPath());
+  });
+
+  afterEach(() => {
+    closeDb();
+    cleanupTempDir();
+  });
+
+  it("exportDatabase returns all 10 backup tables with version 1", () => {
+    const data = exportDatabase();
+    expect(data.version).toBe(1);
+    expect(typeof data.exportedAt).toBe("string");
+    // All 10 tables should be present (even if empty)
+    const expectedTables = [
+      "api_keys", "coding_configs", "model_mappings", "model_prices",
+      "model_restrictions", "providers", "settings", "usage",
+      "user_groups", "users",
+    ];
+    expect(Object.keys(data.tables).sort()).toEqual(expectedTables);
+    // Empty DB → all tables are empty arrays
+    for (const table of expectedTables) {
+      expect(Array.isArray(data.tables[table])).toBe(true);
+    }
+  });
+
+  it("exportDatabase includes inserted data", () => {
+    addProvider({
+      name: "OpenAI",
+      api_type: "openai_chat",
+      base_url: "https://api.openai.com/v1",
+      api_key: "sk-test",
+      models: "gpt-4o",
+      input_price: 0.005,
+      output_price: 0.015,
+    });
+    addUser(111, "alice");
+    setSetting("api_url", "http://example.com");
+
+    const data = exportDatabase();
+    expect(data.tables.providers).toHaveLength(1);
+    expect(data.tables.providers[0].name).toBe("OpenAI");
+    expect(data.tables.users).toHaveLength(1);
+    expect(data.tables.users[0].tg_user_id).toBe(111);
+    // Settings may contain defaults from initDbAsync; verify our specific setting
+    const apiUrlSetting = data.tables.settings.find((s) => s.key === "api_url");
+    expect(apiUrlSetting).toBeDefined();
+    expect(apiUrlSetting!.value).toBe("http://example.com");
+  });
+
+  it("getBackupSummary returns correct counts and metadata", () => {
+    const data: BackupData = {
+      version: 1,
+      exportedAt: "2024-06-15T12:00:00.000Z",
+      tables: {
+        providers: [{ id: 1 }, { id: 2 }],
+        users: [{ id: 1 }],
+        api_keys: [],
+        usage: [],
+        settings: [],
+        model_prices: [],
+        coding_configs: [],
+        model_restrictions: [],
+        user_groups: [],
+        model_mappings: [],
+      },
+    };
+
+    const summary = getBackupSummary(data);
+    expect(summary.version).toBe(1);
+    expect(summary.exportedAt).toBe("2024-06-15T12:00:00.000Z");
+    expect(summary.counts.providers).toBe(2);
+    expect(summary.counts.users).toBe(1);
+    expect(summary.counts.api_keys).toBe(0);
+  });
+
+  it("importDatabase restores data and overwrites existing (round-trip)", () => {
+    // Setup initial data
+    addProvider({
+      name: "P1",
+      api_type: "openai_chat",
+      base_url: "http://localhost",
+      api_key: "key1",
+      models: "gpt-4o",
+      input_price: 1,
+      output_price: 2,
+    });
+    addUser(111, "alice");
+
+    // Export
+    const data = exportDatabase();
+
+    // Add extra data that should be wiped on import
+    addProvider({
+      name: "Extra",
+      api_type: "anthropic",
+      base_url: "http://localhost",
+      api_key: "key2",
+      models: "claude-3",
+      input_price: 3,
+      output_price: 4,
+    });
+
+    // Import original backup (should wipe "Extra")
+    importDatabase(data);
+
+    const providers = getProviders();
+    expect(providers).toHaveLength(1);
+    expect(providers[0].name).toBe("P1");
+
+    const users = getUsers();
+    expect(users).toHaveLength(1);
+    expect((users[0] as Record<string, unknown>).tg_user_id).toBe(111);
+  });
+
+  it("importDatabase clears all data when importing empty backup", () => {
+    addProvider({
+      name: "P1",
+      api_type: "openai_chat",
+      base_url: "http://localhost",
+      api_key: "key1",
+      models: "gpt-4o",
+      input_price: 1,
+      output_price: 2,
+    });
+
+    const emptyBackup: BackupData = {
+      version: 1,
+      exportedAt: "2024-01-01T00:00:00.000Z",
+      tables: {
+        providers: [], users: [], api_keys: [], usage: [],
+        settings: [], model_prices: [], coding_configs: [],
+        model_restrictions: [], user_groups: [], model_mappings: [],
+      },
+    };
+
+    importDatabase(emptyBackup);
+
+    expect(getProviders()).toHaveLength(0);
+    expect(getUsers()).toHaveLength(0);
+  });
+
+  it("importDatabase throws on invalid format", () => {
+    expect(() => importDatabase(null as unknown as BackupData)).toThrow();
+    expect(() => importDatabase({} as BackupData)).toThrow();
+    expect(() =>
+      importDatabase({ version: 1, exportedAt: "", tables: null } as unknown as BackupData),
+    ).toThrow();
+    expect(() =>
+      importDatabase({ version: 1, exportedAt: "", tables: "not-object" } as unknown as BackupData),
+    ).toThrow();
+  });
+
+  it("importDatabase handles rows with missing columns (backward compat)", () => {
+    // Simulate old backup missing newer columns (e.g., key_strategy)
+    const data: BackupData = {
+      version: 1,
+      exportedAt: "2024-01-01T00:00:00.000Z",
+      tables: {
+        providers: [{
+          id: 1,
+          name: "OldProvider",
+          api_type: "openai_chat",
+          base_url: "http://localhost",
+          api_key: "key1",
+          models: "gpt-4o",
+          enabled: 1,
+          input_price: 1,
+          output_price: 2,
+          created_at: "2024-01-01T00:00:00Z",
+          updated_at: "2024-01-01T00:00:00Z",
+          // key_strategy deliberately missing — should default to null
+        }],
+        users: [], api_keys: [], usage: [],
+        settings: [], model_prices: [], coding_configs: [],
+        model_restrictions: [], user_groups: [], model_mappings: [],
+      },
+    };
+
+    importDatabase(data);
+
+    const providers = getProviders();
+    expect(providers).toHaveLength(1);
+    expect(providers[0].name).toBe("OldProvider");
+  });
+
+  it("importDatabase ignores unknown columns in backup (forward compat)", () => {
+    const data: BackupData = {
+      version: 1,
+      exportedAt: "2024-01-01T00:00:00.000Z",
+      tables: {
+        providers: [{
+          id: 1,
+          name: "P1",
+          api_type: "openai_chat",
+          base_url: "http://localhost",
+          api_key: "key1",
+          models: "gpt-4o",
+          enabled: 1,
+          input_price: 1,
+          output_price: 2,
+          created_at: "2024-01-01T00:00:00Z",
+          updated_at: "2024-01-01T00:00:00Z",
+          future_unknown_column: "should-be-ignored",
+        }],
+        users: [], api_keys: [], usage: [],
+        settings: [], model_prices: [], coding_configs: [],
+        model_restrictions: [], user_groups: [], model_mappings: [],
+      },
+    };
+
+    // Should not throw — unknown columns silently dropped
+    expect(() => importDatabase(data)).not.toThrow();
+    expect(getProviders()).toHaveLength(1);
+  });
+
+  it("full round-trip: export → clear → import → export produces same data", () => {
+    addProvider({
+      name: "P1",
+      api_type: "openai_chat",
+      base_url: "http://localhost",
+      api_key: "key1",
+      models: "gpt-4o",
+      input_price: 1.5,
+      output_price: 2.5,
+    });
+    addProvider({
+      name: "P2",
+      api_type: "anthropic",
+      base_url: "http://localhost",
+      api_key: "key2",
+      models: "claude-3",
+      input_price: 3,
+      output_price: 4,
+    });
+    addUser(111, "alice");
+    addUser(222, "bob");
+    setSetting("api_url", "http://example.com");
+
+    const data1 = exportDatabase();
+
+    // Wipe and re-import
+    const emptyBackup: BackupData = {
+      version: 1, exportedAt: "",
+      tables: {
+        providers: [], users: [], api_keys: [], usage: [],
+        settings: [], model_prices: [], coding_configs: [],
+        model_restrictions: [], user_groups: [], model_mappings: [],
+      },
+    };
+    importDatabase(emptyBackup);
+    importDatabase(data1);
+
+    const data2 = exportDatabase();
+
+    // Compare table counts
+    for (const table of Object.keys(data1.tables)) {
+      expect(data2.tables[table]).toHaveLength(data1.tables[table].length);
+    }
+    // Spot-check specific values
+    expect(data2.tables.providers).toHaveLength(2);
+    // Verify our specific setting survived the round-trip (settings count
+    // may include initDbAsync defaults; already checked in loop above)
+    const apiUrlSetting = data2.tables.settings.find((s) => s.key === "api_url");
+    expect(apiUrlSetting).toBeDefined();
+    expect(apiUrlSetting!.value).toBe("http://example.com");
   });
 });
