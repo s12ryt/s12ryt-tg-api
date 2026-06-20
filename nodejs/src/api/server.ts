@@ -197,6 +197,7 @@ async function dispatchWithFallback(
   modelName: string,
   body: Record<string, any>,
   apiKeyId: number | undefined,
+  auth?: { userId: string; apiKeyId: string; tgUserId: number },
 ): Promise<DispatchResult> {
   const isCodingMode = modelName === "coding-mode";
 
@@ -218,8 +219,15 @@ async function dispatchWithFallback(
     for (const fbModelRaw of codingConfig.fallback_list) {
       // Parse thinking suffix from fallback model name (e.g. "o3(high)")
       const { model: fbModel, thinkingLevel: fbThinkingLevel } = parseModelThinkingSuffix(fbModelRaw);
+
+      // BUG-1 fix: enforce model access restrictions (whitelist/blacklist) for fallback models
+      if (auth && !isModelAllowedForRequest(auth, fbModel)) {
+        continue;
+      }
+
+      let fbResolved: ReturnType<typeof lookupModelDb> | undefined;
       try {
-        const fbResolved = lookupModelDb(fbModel);
+        fbResolved = lookupModelDb(fbModel);
         const fbModule = PROVIDER_MODULES[fbResolved.providerType];
         if (!fbModule) continue;
 
@@ -227,6 +235,11 @@ async function dispatchWithFallback(
         const fbBody: Record<string, any> = { ...body, model: fbResolved.originalModel };
         if (fbThinkingLevel) fbBody.thinking_effort = fbThinkingLevel;
         const result = await fbModule.chatCompletion(fbBody, fbResolved.config);
+
+        // BUG-2 fix: report success for multi-key failover tracking
+        if (fbResolved.config._keyIndex != null) {
+          reportSuccess(fbResolved.providerId, fbResolved.config._keyIndex);
+        }
 
         return {
           result,
@@ -239,6 +252,10 @@ async function dispatchWithFallback(
           outputPrice: fbResolved.outputPrice,
         };
       } catch (fbError: any) {
+        // BUG-2 fix: report failure for multi-key failover tracking
+        if (fbResolved && fbResolved.config._keyIndex != null) {
+          reportFailure(fbResolved.providerId, fbResolved.config._keyIndex);
+        }
         console.warn(`Coding mode model ${fbModel} failed:`, fbError.message);
         lastError = fbError;
       }
@@ -393,8 +410,9 @@ async function forwardStreamAndExtractUsage(
     try {
       const parsed = JSON.parse(payload);
       // Standard OpenAI usage (chat completions with include_usage)
-      // or Anthropic message_delta usage
-      const usage = parsed.usage ?? parsed.response?.usage;
+      // or Anthropic message_delta usage (parsed.usage)
+      // or Anthropic message_start usage (parsed.message.usage)
+      const usage = parsed.usage ?? parsed.response?.usage ?? parsed.message?.usage;
       if (usage) {
         if (usage.prompt_tokens) inputTokens = usage.prompt_tokens;
         if (usage.completion_tokens) outputTokens = usage.completion_tokens;
@@ -440,7 +458,7 @@ async function extractUsageFromProviderStream(
         if (!payload || payload === "[DONE]") continue;
         try {
           const parsed = JSON.parse(payload);
-          const usage = parsed.usage ?? parsed.response?.usage;
+          const usage = parsed.usage ?? parsed.response?.usage ?? parsed.message?.usage;
           if (usage) {
             if (usage.prompt_tokens) inputTokens = usage.prompt_tokens;
             if (usage.completion_tokens) outputTokens = usage.completion_tokens;
@@ -535,8 +553,8 @@ app.get("/v1/models", (req: Request, res: Response) => {
     const filteredModels = allModels.filter((m) => allowedNames.has(m.id));
     res.json({ object: "list", data: filteredModels });
   } else {
-    // No auth → return all (shouldn't happen since middleware blocks unauthenticated)
-    res.json({ object: "list", data: allModels });
+    // 無認證：深度防禦，返回空列表（middleware 理論上已擋住未認證請求）
+    res.json({ object: "list", data: [] });
   }
 });
 
@@ -586,7 +604,7 @@ app.post(
       let dispatch: DispatchResult;
       const apiKeyId = req.auth ? parseInt(req.auth.apiKeyId, 10) : undefined;
       try {
-        dispatch = await dispatchWithFallback(modelName, body, apiKeyId);
+        dispatch = await dispatchWithFallback(modelName, body, apiKeyId, req.auth);
       } catch (err: any) {
         const statusCode = err.message?.includes("Unknown model") || err.message?.includes("coding-mode") ? 400 : 502;
         addApiLog({
@@ -915,7 +933,7 @@ app.post(
       let dispatch: DispatchResult;
       const apiKeyIdResp = req.auth ? parseInt(req.auth.apiKeyId, 10) : undefined;
       try {
-        dispatch = await dispatchWithFallback(modelName, chatBody as Record<string, any>, apiKeyIdResp);
+        dispatch = await dispatchWithFallback(modelName, chatBody as Record<string, any>, apiKeyIdResp, req.auth);
       } catch (err: any) {
         const statusCode = err.message?.includes("Unknown model") || err.message?.includes("coding-mode") ? 400 : 502;
         addApiLog({
@@ -1097,6 +1115,124 @@ app.post(
         return;
       }
 
+      // Optimization: for anthropic providers in non-coding mode, pass through directly
+      // without converting Anthropic Messages → Chat Completions → Anthropic Messages.
+      const logStart = Date.now();
+      const isCodingMsg = modelName === "coding-mode";
+      const isStreamMsg = body.stream === true;
+
+      if (!isCodingMsg) {
+        let _resolved: ResolvedProvider;
+        try {
+          _resolved = lookupModelDb(modelName);
+        } catch (err: any) {
+          const statusCode = err.message?.includes("Unknown model") ? 400 : 502;
+          res.status(statusCode).json({
+            type: "error",
+            error: { type: statusCode === 400 ? "invalid_request_error" : "api_error", message: err.message },
+          });
+          return;
+        }
+
+        if (_resolved.providerType === "anthropic") {
+          try {
+            // Replace body.model with the original model name for upstream calls
+            body.model = _resolved.originalModel;
+            const result = await anthropicProvider.messagesApi(body, _resolved.config);
+
+            if (isStreamMsg && result && Symbol.asyncIterator in Object(result)) {
+              setupSSEHeaders(res);
+
+              try {
+                const streamUsage = await forwardStreamAndExtractUsage(
+                  result as AsyncIterable<Uint8Array>,
+                  (chunk) => { writeAndFlush(res, chunk); },
+                );
+                await recordUsageAndCost(
+                  req.auth, String(_resolved.providerId), modelName,
+                  streamUsage.input_tokens, streamUsage.output_tokens,
+                  _resolved.inputPrice, _resolved.outputPrice,
+                );
+                addApiLog({
+                  timestamp: new Date().toISOString(),
+                  path: "/v1/messages",
+                  model: modelName,
+                  actualModel: _resolved.originalModel,
+                  providerName: _resolved.providerName,
+                  username: req.auth ? String(req.auth.tgUserId) : "unknown",
+                  body: { ...body, model: modelName },
+                  responseStatus: 200,
+                  inputTokens: streamUsage.input_tokens,
+                  outputTokens: streamUsage.output_tokens,
+                  latencyMs: Date.now() - logStart,
+                });
+              } catch (err: any) {
+                console.error("Messages direct stream error:", err);
+                addApiLog({
+                  timestamp: new Date().toISOString(),
+                  path: "/v1/messages",
+                  model: modelName,
+                  actualModel: _resolved.originalModel,
+                  providerName: _resolved.providerName,
+                  username: req.auth ? String(req.auth.tgUserId) : "unknown",
+                  body: { ...body, model: modelName },
+                  responseStatus: 502,
+                  error: err.message,
+                  latencyMs: Date.now() - logStart,
+                });
+              } finally {
+                res.end();
+              }
+              return;
+            }
+
+            if (result && typeof result === "object") {
+              const _u = (result as any).usage ?? {};
+              const _inT: number = _u.input_tokens ?? 0;
+              const _outT: number = _u.output_tokens ?? 0;
+              await recordUsageAndCost(
+                req.auth, String(_resolved.providerId), modelName,
+                _inT, _outT,
+                _resolved.inputPrice, _resolved.outputPrice,
+              );
+              addApiLog({
+                timestamp: new Date().toISOString(),
+                path: "/v1/messages",
+                model: modelName,
+                actualModel: _resolved.originalModel,
+                providerName: _resolved.providerName,
+                username: req.auth ? String(req.auth.tgUserId) : "unknown",
+                body: { ...body, model: modelName },
+                responseStatus: 200,
+                inputTokens: _inT,
+                outputTokens: _outT,
+                latencyMs: Date.now() - logStart,
+              });
+              res.json(result);
+              return;
+            }
+          } catch (err: any) {
+            addApiLog({
+              timestamp: new Date().toISOString(),
+              path: "/v1/messages",
+              model: modelName,
+              actualModel: _resolved.originalModel,
+              providerName: _resolved.providerName,
+              username: req.auth ? String(req.auth.tgUserId) : "unknown",
+              body: { ...body, model: modelName },
+              responseStatus: 502,
+              error: err.message,
+              latencyMs: Date.now() - logStart,
+            });
+            res.status(502).json({
+              type: "error",
+              error: { type: "api_error", message: err.message },
+            });
+            return;
+          }
+        }
+      }
+
       // Convert Anthropic Messages API → OpenAI Chat Completions format
       const chatBody = convertAnthropicInputToMessages(body);
 
@@ -1121,11 +1257,10 @@ app.post(
 
       // Dispatch with coding mode fallback
       const originalModelMsg = modelName;
-      const logStart = Date.now();
       let dispatch: DispatchResult;
       const apiKeyIdMsg = req.auth ? parseInt(req.auth.apiKeyId, 10) : undefined;
       try {
-        dispatch = await dispatchWithFallback(modelName, chatBody as Record<string, any>, apiKeyIdMsg);
+        dispatch = await dispatchWithFallback(modelName, chatBody as Record<string, any>, apiKeyIdMsg, req.auth);
       } catch (err: any) {
         const statusCode = err.message?.includes("Unknown model") || err.message?.includes("coding-mode") ? 400 : 502;
         const errorType = statusCode === 400 ? "invalid_request_error" : "api_error";

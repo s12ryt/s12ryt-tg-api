@@ -419,6 +419,11 @@ async def _dispatch_with_fallback(
             try:
                 # Parse thinking suffix from fallback model name (e.g. "o3(high)")
                 fb_real_model, fb_level = parse_model_thinking_suffix(fb_model)
+                # BUG-1 fix: enforce model access restrictions on fallback models
+                # (prevents bypassing whitelist/blacklist via coding-mode chain)
+                if not await _is_model_allowed_for_request(request, fb_real_model):
+                    logger.info("Coding mode: model %s not allowed, skipping", fb_real_model)
+                    continue
                 fb_type, fb_id, fb_config, fb_in_price, fb_out_price = await _resolve_model_full(fb_real_model)
                 fb_module = PROVIDER_MODULES.get(fb_type)
                 if fb_module is None:
@@ -428,8 +433,20 @@ async def _dispatch_with_fallback(
                 if fb_level:
                     fb_body["thinking_effort"] = fb_level
                 logger.info("Coding mode: trying model %s", fb_real_model)
-                result = await fb_module.chat_completion(fb_body, fb_config)
-                return result, fb_real_model, fb_type, fb_id, fb_config, fb_in_price, fb_out_price
+                fb_key_index = fb_config.get("_key_index")
+                try:
+                    result = await fb_module.chat_completion(fb_body, fb_config)
+                    # BUG-2 fix: track key health for circuit breaker
+                    if fb_key_index is not None:
+                        from api.key_selector import report_success
+                        report_success(int(fb_id), fb_key_index)
+                    return result, fb_real_model, fb_type, fb_id, fb_config, fb_in_price, fb_out_price
+                except Exception as chat_exc:
+                    # BUG-2 fix: track key health for circuit breaker
+                    if fb_key_index is not None:
+                        from api.key_selector import report_failure
+                        report_failure(int(fb_id), fb_key_index)
+                    raise
             except Exception as fb_exc:
                 logger.warning("Coding mode model %s failed: %s", fb_model, fb_exc)
                 last_error = fb_exc
