@@ -171,7 +171,9 @@ export function webAuthMiddleware(req: Request, res: Response, next: NextFunctio
     return;
   }
 
-  req.webAuth = { tgUserId: info.tgUserId, isAdmin: info.isAdmin };
+  // 每次請求重新校驗 isAdmin，不信任 session 創建時快取的值
+  // 確保 ADMIN_ID 變更後權限能即時生效
+  req.webAuth = { tgUserId: info.tgUserId, isAdmin: info.tgUserId === config.ADMIN_ID };
   next();
 }
 
