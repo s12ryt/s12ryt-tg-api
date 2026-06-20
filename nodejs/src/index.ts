@@ -16,6 +16,7 @@ import { registerAdminHandlers } from "./bot/handlers/adminHandlers.js";
 import { registerLimitHandlers } from "./bot/handlers/limitHandlers.js";
 import { registerUpdateHandlers } from "./bot/handlers/updateHandlers.js";
 import { registerWebHandlers } from "./bot/handlers/webHandlers.js";
+import { registerBackupHandlers } from "./bot/handlers/backupHandlers.js";
 
 import { Bot, Context, session } from "grammy";
 import type { BotCommand } from "grammy/types";
@@ -70,6 +71,7 @@ async function setBotCommands(bot: MyBot): Promise<void> {
     { command: "version", description: "查看程式版本" },
     { command: "update", description: "檢查並更新程式" },
     { command: "restart", description: "重啟進程" },
+    { command: "backup", description: "備份/還原資料庫" },
   ];
 
   try {
@@ -169,6 +171,7 @@ async function main(): Promise<void> {
   registerLimitHandlers(bot);
   registerUpdateHandlers(bot);
   registerWebHandlers(bot);
+  registerBackupHandlers(bot);
 
   // 3.5 Set bot commands menu
   await setBotCommands(bot);
