@@ -104,8 +104,8 @@ async def rebuild_provider_cache() -> None:
     for cb in _on_cache_rebuild_callbacks:
         try:
             cb()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Provider cache rebuild callback failed: %s", e)
 
 
 _on_cache_rebuild_callbacks: list[Any] = []

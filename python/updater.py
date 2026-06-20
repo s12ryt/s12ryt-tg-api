@@ -393,10 +393,7 @@ def _update_via_tarball(tarball_url: str) -> UpdateResult:
     except Exception as e:
         return UpdateResult(success=False, message=f"Tarball 更新失敗：{e}")
     finally:
-        try:
-            shutil.rmtree(tmpdir_ctx, ignore_errors=True)
-        except Exception:
-            pass
+        shutil.rmtree(tmpdir_ctx, ignore_errors=True)
 
 
 def _sync_dir_preserving_data(src: str, dest: str) -> None:

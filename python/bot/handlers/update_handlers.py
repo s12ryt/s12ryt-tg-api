@@ -192,12 +192,12 @@ async def handle_update_confirm(update: Update, context: ContextTypes.DEFAULT_TY
     except Exception as e:
         try:
             await query.answer()
-        except Exception:
-            pass
+        except Exception as e2:
+            logger.debug("query.answer failed in update error handler: %s", e2)
         try:
             await query.edit_message_text(f"❌ 更新失敗：{e}")
-        except Exception:
-            pass
+        except Exception as e2:
+            logger.warning("Failed to notify user about update error: %s", e2)
 
 
 async def handle_update_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -209,8 +209,8 @@ async def handle_update_cancel(update: Update, context: ContextTypes.DEFAULT_TYP
     try:
         await query.answer(text="已取消更新")
         await query.edit_message_text("🚫 已取消更新。")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to acknowledge update cancel: %s", e)
 
 
 # ============================================================

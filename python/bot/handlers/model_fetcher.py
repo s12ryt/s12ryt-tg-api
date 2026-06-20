@@ -9,11 +9,14 @@ Utility: fetch provider model list and pricing from external APIs.
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 import urllib.parse
 from typing import Any
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Types
@@ -50,7 +53,7 @@ async def _get_models_dev_data() -> dict[str, Any]:
             _cache_timestamp = now
             return data
     except Exception as e:
-        print(f"[models.dev] Failed to fetch pricing data: {e}")
+        logger.warning("Failed to fetch models.dev pricing data: %s", e)
         if _models_dev_cache is not None:
             return _models_dev_cache
         return {}
@@ -96,7 +99,7 @@ async def fetch_provider_models(
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.get(url, headers=headers)
             if resp.status_code >= 400:
-                print(f"[fetch_provider_models] {url} returned HTTP {resp.status_code}, skipping model list")
+                logger.warning("fetch_provider_models: %s returned HTTP %s, skipping model list", url, resp.status_code)
                 return []
             json_data = resp.json()
 
@@ -123,7 +126,7 @@ async def fetch_provider_models(
 
         return models
     except Exception as e:
-        print(f"[fetch_provider_models] Failed: {e}")
+        logger.warning("fetch_provider_models failed: %s", e)
         return []
 
 
@@ -176,7 +179,7 @@ async def fetch_models_pricing(
                             "output": cost.get("output") if isinstance(cost, dict) else None,
                         }
     except Exception as e:
-        print(f"[fetch_models_pricing] Failed: {e}")
+        logger.warning("fetch_models_pricing failed: %s", e)
 
     return result
 
@@ -234,7 +237,7 @@ async def fetch_models_no_auth(
         return models, False
 
     except Exception as e:
-        print(f"[fetch_models_no_auth] Failed: {e}")
+        logger.warning("fetch_models_no_auth failed: %s", e)
         return [], False
 
 

@@ -8,7 +8,7 @@ Storage format in DB: providers.api_key stores JSON array string
 Selection strategy:
   - Pick first non-suspended key
   - Track consecutive failures per (provider_id, key_index)
-  - After 5 consecutive failures → suspend for 5 minutes
+  - After 3 consecutive failures → suspend for 60 seconds
   - On success → reset fail count
 """
 
@@ -19,8 +19,8 @@ from typing import Optional
 
 
 # ── Configuration ──────────────────────────────────────────────
-MAX_CONSECUTIVE_FAILURES = 5
-SUSPEND_DURATION_SECONDS = 300  # 5 minutes
+MAX_CONSECUTIVE_FAILURES = 3
+SUSPEND_DURATION_SECONDS = 60  # 60 seconds
 
 
 # ── In-memory state ────────────────────────────────────────────
