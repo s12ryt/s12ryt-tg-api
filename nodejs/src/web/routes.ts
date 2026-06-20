@@ -167,10 +167,9 @@ router.get("/api/auth/me", (req: Request, res: Response) => {
 
 /** GET /web/api/models — 可用模型列表 */
 router.get("/api/models", (req: Request, res: Response) => {
-  const { isAdmin } = req.webAuth!;
   const allModels = getAllCachedModelNames();
-  // 管理員可看全部；普通用戶暫時也返回全部（前端不強制限制模型列表顯示）
-  res.json({ models: isAdmin ? allModels : allModels });
+  // 目前對所有用戶返回全部模型（前端不強制限制模型列表顯示）
+  res.json({ models: allModels });
 });
 
 /** GET /web/api/keys — 我的 API Keys */
@@ -634,12 +633,25 @@ router.get("/api/admin/users/:id/keys", (req: Request, res: Response) => {
 
 /** DELETE /web/api/admin/users/:id/keys/:keyId — 刪除用戶 API Key */
 router.delete("/api/admin/users/:id/keys/:keyId", (req: Request, res: Response) => {
+  const id = parseInt(req.params.id, 10);
   const keyId = parseInt(req.params.keyId, 10);
-  if (isNaN(keyId)) {
-    res.status(400).json({ error: "無效的 Key ID" });
+  if (isNaN(id) || isNaN(keyId)) {
+    res.status(400).json({ error: "無效的 ID" });
     return;
   }
   try {
+    // 驗證用戶存在
+    const user = getUserById(id);
+    if (!user) {
+      res.status(404).json({ error: "用戶不存在" });
+      return;
+    }
+    // 驗證 key 確實屬於該用戶（路徑語義一致性，防止跨用戶誤刪）
+    const userKeys = getKeysByUser(user.tg_user_id);
+    if (!userKeys.some((k) => k.id === keyId)) {
+      res.status(404).json({ error: "該用戶沒有此 Key" });
+      return;
+    }
     deleteApiKey(keyId);
     res.json({ ok: true });
   } catch (err) {
