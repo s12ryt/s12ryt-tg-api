@@ -815,6 +815,48 @@ describe("Admin Routes — Backups & Rollback", () => {
 });
 
 // ===========================================================================
+// Admin Routes — Providers
+// ===========================================================================
+
+describe("Admin Routes — Providers", () => {
+  beforeEach(() => {
+    vi.mocked(db.getProviders).mockReset();
+    (globalThis as any).fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 400,
+      text: vi.fn().mockResolvedValue("bad key"),
+    });
+  });
+
+  it("redacts Google API key from provider test-model error URL", async () => {
+    vi.mocked(db.getProviders).mockReturnValue([
+      {
+        id: 1,
+        name: "Gemini",
+        api_type: "google",
+        base_url: "https://generativelanguage.googleapis.com/v1beta",
+        api_key: JSON.stringify(["secret-google-key"]),
+        models: "gemini-1.5-pro",
+        enabled: 1,
+        input_price: 0,
+        output_price: 0,
+      } as any,
+    ]);
+    const session = adminSession();
+
+    const res = await request(app)
+      .post("/web/api/admin/providers/1/test-model")
+      .set("Authorization", `Bearer ${session}`)
+      .send({ model: "gemini-1.5-pro" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(false);
+    expect(res.body.url).toContain("key=REDACTED");
+    expect(res.body.url).not.toContain("secret-google-key");
+  });
+});
+
+// ===========================================================================
 // Access Control
 // ===========================================================================
 

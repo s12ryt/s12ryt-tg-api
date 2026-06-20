@@ -2215,10 +2215,26 @@ function getTableColumns(tableName: string): string[] {
   return result[0].values.map((r) => String(r[1]));
 }
 
+function assertNoForeignKeyViolations(d: SqlJsDatabase): void {
+  const result = d.exec("PRAGMA foreign_key_check");
+  const violations = result[0]?.values ?? [];
+  if (violations.length === 0) return;
+
+  const samples = violations.slice(0, 5).map((row) => {
+    const [table, rowId, parent, fkId] = row;
+    return `${table}.${rowId} -> ${parent} (fk ${fkId})`;
+  });
+  const suffix = violations.length > samples.length
+    ? `; and ${violations.length - samples.length} more`
+    : "";
+  throw new Error(`Invalid backup: foreign key violations detected: ${samples.join(", ")}${suffix}`);
+}
+
 /**
  * Import (restore) a backup, overwriting all existing data.
  *
- * Uses a single transaction with foreign_keys disabled; rolls back on error.
+ * Uses a single transaction with foreign_keys disabled during bulk insert,
+ * validates referential integrity before commit, and rolls back on error.
  * After success: rebuilds provider cache, clears circuit-breaker state, saves to disk.
  *
  * @throws Error if the backup format is invalid or the restore fails.
@@ -2272,6 +2288,7 @@ export function importDatabase(data: BackupData): void {
       }
     }
 
+    assertNoForeignKeyViolations(d);
     d.exec("COMMIT");
   } catch (err) {
     try {

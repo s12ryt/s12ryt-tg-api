@@ -34,6 +34,7 @@ interface PendingRestore {
 const pendingRestores = new Map<number, PendingRestore>();
 const RESTORE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20 MB — Telegram Bot API getFile download limit
+const DOWNLOAD_TIMEOUT_MS = 30_000;
 
 /** Garbage-collect expired pending restores. */
 function cleanExpiredRestores(): void {
@@ -58,6 +59,38 @@ function getBackupFilename(): string {
   const p = (n: number) => String(n).padStart(2, "0");
   const ts = `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}-${p(now.getHours())}-${p(now.getMinutes())}`;
   return `s12ryt-tg-api-${ts}.json`;
+}
+
+async function downloadBackupText(url: string): Promise<string> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), DOWNLOAD_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+
+    if (!response.ok) {
+      throw new Error(`下載失敗：HTTP ${response.status}`);
+    }
+
+    const contentLength = Number(response.headers.get("content-length") ?? 0);
+    if (contentLength > MAX_FILE_SIZE) {
+      throw new Error("檔案過大（超過 20MB），無法處理");
+    }
+
+    const text = await response.text();
+    if (Buffer.byteLength(text, "utf8") > MAX_FILE_SIZE) {
+      throw new Error("檔案過大（超過 20MB），無法處理");
+    }
+
+    return text;
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      throw new Error("下載逾時，請稍後重試");
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -121,14 +154,7 @@ export function registerBackupHandlers(bot: Bot<MyContext>): void {
       }
 
       const url = `https://api.telegram.org/file/bot${config.BOT_TOKEN}/${fileInfo.file_path}`;
-      const response = await fetch(url);
-
-      if (!response.ok) {
-        await ctx.reply(`❌ 下載失敗：HTTP ${response.status}`);
-        return;
-      }
-
-      const text = await response.text();
+      const text = await downloadBackupText(url);
 
       // Parse JSON
       let data: BackupData;

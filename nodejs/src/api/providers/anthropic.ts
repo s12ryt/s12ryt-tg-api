@@ -8,6 +8,7 @@
 
 import { v4 as uuidv4 } from "uuid";
 import { injectForAnthropic, type ThinkingLevel } from "../thinkingParser.js";
+import { createRequestTimeout, isAbortError, withRequestTimeout } from "./requestTimeout.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -175,12 +176,10 @@ function toAnthropicRequest(openaiReq: ChatCompletionRequest): Record<string, an
   const merged: Array<{ role: string; content: any }> = [];
   for (const msg of anthropicMessages) {
     if (merged.length > 0 && merged[merged.length - 1].role === msg.role) {
-      const prev = merged[merged.length - 1].content;
-      const curr = msg.content;
-      merged[merged.length - 1].content =
-        (typeof prev === "string" ? prev : String(prev)) +
-        "\n" +
-        (typeof curr === "string" ? curr : String(curr));
+      merged[merged.length - 1].content = mergeAnthropicContent(
+        merged[merged.length - 1].content,
+        msg.content
+      );
     } else {
       merged.push({ role: msg.role, content: msg.content });
     }
@@ -233,9 +232,26 @@ function convertContent(content: any): any {
         }
       }
     }
-    return parts.length > 0 ? parts : String(content);
+    return parts.length > 0 ? parts : [{ type: "text", text: "" }];
   }
   return String(content);
+}
+
+function mergeAnthropicContent(previous: any, current: any): any {
+  if (typeof previous === "string" && typeof current === "string") {
+    return `${previous}\n${current}`;
+  }
+
+  return [
+    ...toAnthropicContentBlocks(previous),
+    ...toAnthropicContentBlocks(current),
+  ];
+}
+
+function toAnthropicContentBlocks(content: any): Array<Record<string, any>> {
+  if (Array.isArray(content)) return content;
+  if (typeof content === "string") return [{ type: "text", text: content }];
+  return [{ type: "text", text: String(content) }];
 }
 
 // ---------------------------------------------------------------------------
@@ -309,26 +325,24 @@ async function doRequest(
         return streamResponse(url, headers, body, timeout, originalModel);
       }
 
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeout);
+      return await withRequestTimeout(timeout, async (signal) => {
+        const resp = await fetch(url, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+          signal,
+        });
 
-      const resp = await fetch(url, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(body),
-        signal: controller.signal,
+        if (!resp.ok) {
+          const errorBody = await resp.text();
+          const error = new Error(`Anthropic API error ${resp.status}: ${errorBody}`);
+          (error as any).status = resp.status;
+          throw error;
+        }
+
+        const data = await resp.json();
+        return toOpenAIResponse(data, originalModel);
       });
-      clearTimeout(timer);
-
-      if (!resp.ok) {
-        const errorBody = await resp.text();
-        const error = new Error(`Anthropic API error ${resp.status}: ${errorBody}`);
-        (error as any).status = resp.status;
-        throw error;
-      }
-
-      const data = await resp.json();
-      return toOpenAIResponse(data, originalModel);
     } catch (err: any) {
       lastError = err;
       const status: number | undefined = err.status;
@@ -375,26 +389,24 @@ async function doPassthroughRequest(
         return streamPassthrough(url, headers, body, timeout);
       }
 
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeout);
+      return await withRequestTimeout(timeout, async (signal) => {
+        const resp = await fetch(url, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+          signal,
+        });
 
-      const resp = await fetch(url, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(body),
-        signal: controller.signal,
+        if (!resp.ok) {
+          const errorBody = await resp.text();
+          const error = new Error(`Anthropic API error ${resp.status}: ${errorBody}`);
+          (error as any).status = resp.status;
+          throw error;
+        }
+
+        // Native Anthropic Messages API response — return as-is
+        return (await resp.json()) as Record<string, any>;
       });
-      clearTimeout(timer);
-
-      if (!resp.ok) {
-        const errorBody = await resp.text();
-        const error = new Error(`Anthropic API error ${resp.status}: ${errorBody}`);
-        (error as any).status = resp.status;
-        throw error;
-      }
-
-      // Native Anthropic Messages API response — return as-is
-      return (await resp.json()) as Record<string, any>;
     } catch (err: any) {
       lastError = err;
       const status: number | undefined = err.status;
@@ -433,33 +445,48 @@ async function* streamPassthrough(
   body: Record<string, any>,
   timeout: number
 ): AsyncGenerator<Uint8Array> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeout);
-
-  const resp = await fetch(url, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-    signal: controller.signal,
-  });
-  clearTimeout(timer);
-
-  if (!resp.ok) {
-    const errorBody = await resp.text();
-    throw new Error(`Anthropic API error ${resp.status}: ${errorBody}`);
-  }
-
-  const reader = resp.body?.getReader();
-  if (!reader) throw new Error("No response body for streaming");
+  const requestTimeout = createRequestTimeout(timeout);
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let completed = false;
 
   try {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal: requestTimeout.signal,
+    });
+
+    if (!resp.ok) {
+      const errorBody = await resp.text();
+      throw new Error(`Anthropic API error ${resp.status}: ${errorBody}`);
+    }
+
+    reader = resp.body?.getReader();
+    if (!reader) throw new Error("No response body for streaming");
+
     while (true) {
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) {
+        completed = true;
+        break;
+      }
       yield value;
     }
+  } catch (err) {
+    if (isAbortError(err) || requestTimeout.signal.aborted) {
+      throw new Error("Anthropic API request timed out");
+    }
+    throw err;
   } finally {
-    reader.releaseLock();
+    requestTimeout.clear();
+    if (reader) {
+      if (!completed) {
+        requestTimeout.abort();
+        await reader.cancel().catch(() => undefined);
+      }
+      reader.releaseLock();
+    }
   }
 }
 
@@ -478,32 +505,35 @@ async function* streamResponse(
   const created = Math.floor(Date.now() / 1000);
   const encoder = new TextEncoder();
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeout);
-
-  const resp = await fetch(url, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-    signal: controller.signal,
-  });
-  clearTimeout(timer);
-
-  if (!resp.ok) {
-    const errorBody = await resp.text();
-    throw new Error(`Anthropic API error ${resp.status}: ${errorBody}`);
-  }
-
-  const reader = resp.body?.getReader();
-  if (!reader) throw new Error("No response body for streaming");
+  const requestTimeout = createRequestTimeout(timeout);
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let completed = false;
 
   const decoder = new TextDecoder();
   let buffer = "";
 
   try {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal: requestTimeout.signal,
+    });
+
+    if (!resp.ok) {
+      const errorBody = await resp.text();
+      throw new Error(`Anthropic API error ${resp.status}: ${errorBody}`);
+    }
+
+    reader = resp.body?.getReader();
+    if (!reader) throw new Error("No response body for streaming");
+
     while (true) {
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) {
+        completed = true;
+        break;
+      }
 
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split("\n");
@@ -534,6 +564,7 @@ async function* streamResponse(
           );
           yield encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`);
           yield encoder.encode("data: [DONE]\n\n");
+          completed = true;
           return;
         } else if (eventType === "message_delta") {
           const stopReason = event.delta?.stop_reason ?? "end_turn";
@@ -551,8 +582,20 @@ async function* streamResponse(
         }
       }
     }
+  } catch (err) {
+    if (isAbortError(err) || requestTimeout.signal.aborted) {
+      throw new Error("Anthropic API request timed out");
+    }
+    throw err;
   } finally {
-    reader.releaseLock();
+    requestTimeout.clear();
+    if (reader) {
+      if (!completed) {
+        requestTimeout.abort();
+        await reader.cancel().catch(() => undefined);
+      }
+      reader.releaseLock();
+    }
   }
 
   yield encoder.encode("data: [DONE]\n\n");

@@ -6,6 +6,7 @@
 
 import { v4 as uuidv4 } from "uuid";
 import { injectForGoogle, type ThinkingLevel } from "../thinkingParser.js";
+import { createRequestTimeout, isAbortError, withRequestTimeout } from "./requestTimeout.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -101,7 +102,7 @@ function toGeminiRequest(
 
   const messagesRaw = openaiReq.messages ?? [];
 
-  let systemInstruction: Record<string, any> | null = null;
+  const systemInstructionParts: Array<Record<string, any>> = [];
   const contents: Array<Record<string, any>> = [];
 
   for (const msg of messagesRaw) {
@@ -109,7 +110,7 @@ function toGeminiRequest(
     const content = msg.content;
 
     if (role === "system") {
-      systemInstruction = buildContentPart(content);
+      systemInstructionParts.push(...buildParts(content));
       continue;
     }
 
@@ -131,8 +132,8 @@ function toGeminiRequest(
     contents: merged,
   };
 
-  if (systemInstruction) {
-    body.systemInstruction = systemInstruction;
+  if (systemInstructionParts.length > 0) {
+    body.systemInstruction = { parts: systemInstructionParts };
   }
 
   // Generation config
@@ -186,17 +187,6 @@ function buildParts(content: any): Array<Record<string, any>> {
   return [{ text: String(content) }];
 }
 
-function buildContentPart(content: any): Record<string, any> {
-  if (typeof content === "string") return { parts: [{ text: content }] };
-  if (Array.isArray(content)) {
-    const texts = content
-      .filter((p: any) => p.type === "text")
-      .map((p: any) => p.text ?? "");
-    return { parts: [{ text: texts.join("\n") }] };
-  }
-  return { parts: [{ text: String(content) }] };
-}
-
 function mergeConsecutive(
   contents: Array<Record<string, any>>
 ): Array<Record<string, any>> {
@@ -228,9 +218,7 @@ function toOpenAIResponse(
     const parts = candidate.content?.parts ?? [];
     text = parts.filter((p: any) => "text" in p).map((p: any) => p.text).join("");
 
-    const reason = candidate.finishReason ?? "STOP";
-    if (reason === "MAX_TOKENS") finishReason = "length";
-    else if (reason === "SAFETY") finishReason = "content_filter";
+    finishReason = mapFinishReason(candidate.finishReason ?? "STOP") ?? "stop";
   }
 
   const usageMeta = geminiResp.usageMetadata ?? {};
@@ -277,26 +265,24 @@ async function doRequest(
         return streamResponse(url, headers, body, timeout, originalModel);
       }
 
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeout);
+      return await withRequestTimeout(timeout, async (signal) => {
+        const resp = await fetch(url, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+          signal,
+        });
 
-      const resp = await fetch(url, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(body),
-        signal: controller.signal,
+        if (!resp.ok) {
+          const errorBody = await resp.text();
+          const error = new Error(`Gemini API error ${resp.status}: ${errorBody}`);
+          (error as any).status = resp.status;
+          throw error;
+        }
+
+        const data = await resp.json();
+        return toOpenAIResponse(data, originalModel);
       });
-      clearTimeout(timer);
-
-      if (!resp.ok) {
-        const errorBody = await resp.text();
-        const error = new Error(`Gemini API error ${resp.status}: ${errorBody}`);
-        (error as any).status = resp.status;
-        throw error;
-      }
-
-      const data = await resp.json();
-      return toOpenAIResponse(data, originalModel);
     } catch (err: any) {
       lastError = err;
       const status: number | undefined = err.status;
@@ -335,32 +321,35 @@ async function* streamResponse(
   const created = Math.floor(Date.now() / 1000);
   const encoder = new TextEncoder();
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeout);
-
-  const resp = await fetch(url, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-    signal: controller.signal,
-  });
-  clearTimeout(timer);
-
-  if (!resp.ok) {
-    const errorBody = await resp.text();
-    throw new Error(`Gemini API error ${resp.status}: ${errorBody}`);
-  }
-
-  const reader = resp.body?.getReader();
-  if (!reader) throw new Error("No response body for streaming");
+  const requestTimeout = createRequestTimeout(timeout);
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let completed = false;
 
   const decoder = new TextDecoder();
   let buffer = "";
 
   try {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal: requestTimeout.signal,
+    });
+
+    if (!resp.ok) {
+      const errorBody = await resp.text();
+      throw new Error(`Gemini API error ${resp.status}: ${errorBody}`);
+    }
+
+    reader = resp.body?.getReader();
+    if (!reader) throw new Error("No response body for streaming");
+
     while (true) {
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) {
+        completed = true;
+        break;
+      }
 
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split("\n");
@@ -400,7 +389,7 @@ async function* streamResponse(
         let finishReason: string | null = null;
         const reason = candidate.finishReason;
         if (reason) {
-          finishReason = reason === "MAX_TOKENS" ? "length" : "stop";
+          finishReason = mapFinishReason(reason);
         }
 
         const chunk: Record<string, any> = {
@@ -429,11 +418,30 @@ async function* streamResponse(
         yield encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`);
       }
     }
+  } catch (err) {
+    if (isAbortError(err) || requestTimeout.signal.aborted) {
+      throw new Error("Gemini API request timed out");
+    }
+    throw err;
   } finally {
-    reader.releaseLock();
+    requestTimeout.clear();
+    if (reader) {
+      if (!completed) {
+        requestTimeout.abort();
+        await reader.cancel().catch(() => undefined);
+      }
+      reader.releaseLock();
+    }
   }
 
   yield encoder.encode("data: [DONE]\n\n");
+}
+
+function mapFinishReason(reason: string): string | null {
+  if (reason === "MAX_TOKENS") return "length";
+  if (reason === "SAFETY") return "content_filter";
+  if (reason === "STOP") return "stop";
+  return "stop";
 }
 
 // ---------------------------------------------------------------------------

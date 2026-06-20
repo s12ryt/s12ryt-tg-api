@@ -16,6 +16,7 @@ import {
   streamChatFromResponses,
 } from "../responses.js";
 import { injectForOpenAIResponse, type ThinkingLevel } from "../thinkingParser.js";
+import { createRequestTimeout, isAbortError, withRequestTimeout } from "./requestTimeout.js";
 
 const DEFAULT_TIMEOUT = 120_000;
 const MAX_RETRIES = 2;
@@ -166,25 +167,23 @@ async function doRequest(
         return streamResponse(url, headers, body, timeout);
       }
 
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeout);
+      return await withRequestTimeout(timeout, async (signal) => {
+        const resp = await fetch(url, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+          signal,
+        });
 
-      const resp = await fetch(url, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(body),
-        signal: controller.signal,
+        if (!resp.ok) {
+          const errorBody = await resp.text();
+          const error = new Error(`OpenAI Responses API error ${resp.status}: ${errorBody}`);
+          (error as any).status = resp.status;
+          throw error;
+        }
+
+        return (await resp.json()) as Record<string, any>;
       });
-      clearTimeout(timer);
-
-      if (!resp.ok) {
-        const errorBody = await resp.text();
-        const error = new Error(`OpenAI Responses API error ${resp.status}: ${errorBody}`);
-        (error as any).status = resp.status;
-        throw error;
-      }
-
-      return (await resp.json()) as Record<string, any>;
     } catch (err: any) {
       lastError = err;
       const status: number | undefined = err.status;
@@ -219,33 +218,48 @@ async function* streamResponse(
   body: Record<string, any>,
   timeout: number
 ): AsyncGenerator<Uint8Array> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeout);
-
-  const resp = await fetch(url, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-    signal: controller.signal,
-  });
-  clearTimeout(timer);
-
-  if (!resp.ok) {
-    const errorBody = await resp.text();
-    throw new Error(`OpenAI Responses API error ${resp.status}: ${errorBody}`);
-  }
-
-  const reader = resp.body?.getReader();
-  if (!reader) throw new Error("No response body for streaming");
+  const requestTimeout = createRequestTimeout(timeout);
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let completed = false;
 
   try {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal: requestTimeout.signal,
+    });
+
+    if (!resp.ok) {
+      const errorBody = await resp.text();
+      throw new Error(`OpenAI Responses API error ${resp.status}: ${errorBody}`);
+    }
+
+    reader = resp.body?.getReader();
+    if (!reader) throw new Error("No response body for streaming");
+
     while (true) {
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) {
+        completed = true;
+        break;
+      }
       yield value;
     }
+  } catch (err) {
+    if (isAbortError(err) || requestTimeout.signal.aborted) {
+      throw new Error("OpenAI Responses API request timed out");
+    }
+    throw err;
   } finally {
-    reader.releaseLock();
+    requestTimeout.clear();
+    if (reader) {
+      if (!completed) {
+        requestTimeout.abort();
+        await reader.cancel().catch(() => undefined);
+      }
+      reader.releaseLock();
+    }
   }
 }
 

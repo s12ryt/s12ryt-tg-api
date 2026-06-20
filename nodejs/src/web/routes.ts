@@ -109,6 +109,19 @@ import {
 
 const router = Router();
 
+function sanitizeProviderTestUrl(url: string, apiType: string): string {
+  if (apiType !== "google") return url;
+  try {
+    const parsed = new URL(url);
+    if (parsed.searchParams.has("key")) {
+      parsed.searchParams.set("key", "REDACTED");
+    }
+    return parsed.toString();
+  } catch {
+    return url.replace(/([?&]key=)[^&]+/i, "$1REDACTED");
+  }
+}
+
 // 啟動 OTP/Session 清理任務
 startCleanupTimer();
 
@@ -1273,7 +1286,7 @@ router.post("/api/admin/providers/:id/test-model", async (req: Request, res: Res
         latencyMs,
         status: resp.status,
         error: `HTTP ${resp.status}: ${errorText.slice(0, 500)}`,
-        url,
+        url: sanitizeProviderTestUrl(url, apiType),
         apiType,
       });
       return;

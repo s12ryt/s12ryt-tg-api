@@ -436,94 +436,97 @@ async function extractUsageFromProviderStream(
   const decoder = new TextDecoder();
   let inputTokens = 0;
   let outputTokens = 0;
-
-  // Create a "tee" by buffering chunks
-  const chunkQueue: Uint8Array[] = [];
-  const resolveHolder: { fn: ((value: IteratorResult<Uint8Array>) => void) | null } = { fn: null };
+  let sseBuffer = "";
+  let decoderFlushed = false;
   let streamDone = false;
+  let cancelled = false;
+  const providerIterator = providerStream[Symbol.asyncIterator]();
 
-  // Producer: consume providerStream, extract usage, push to queue
-  const producer = (async () => {
-    let sseBuffer = "";
-    for await (const chunk of providerStream) {
-      // Accumulate across TCP chunk boundaries
-      sseBuffer += decoder.decode(chunk, { stream: true });
-      const lines = sseBuffer.split("\n");
-      sseBuffer = lines.pop() ?? ""; // keep incomplete trailing line
+  function parseChunk(chunk: Uint8Array): void {
+    sseBuffer += decoder.decode(chunk, { stream: true });
+    const lines = sseBuffer.split("\n");
+    sseBuffer = lines.pop() ?? "";
 
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith("data: ")) continue;
-        const payload = trimmed.slice(6).trim();
-        if (!payload || payload === "[DONE]") continue;
-        try {
-          const parsed = JSON.parse(payload);
-          const usage = parsed.usage ?? parsed.response?.usage ?? parsed.message?.usage;
-          if (usage) {
-            if (usage.prompt_tokens) inputTokens = usage.prompt_tokens;
-            if (usage.completion_tokens) outputTokens = usage.completion_tokens;
-            if (!inputTokens && usage.input_tokens) inputTokens = usage.input_tokens;
-            if (!outputTokens && usage.output_tokens) outputTokens = usage.output_tokens;
-          }
-        } catch { /* skip */ }
-      }
-
-      chunkQueue.push(chunk);
-      if (resolveHolder.fn) {
-        const r = resolveHolder.fn;
-        resolveHolder.fn = null;
-        r({ value: chunkQueue.shift()!, done: false });
-      }
+    for (const line of lines) {
+      extractUsageFromSSE(line.trim());
     }
-    // Flush decoder + remaining buffer
+  }
+
+  function flushDecoder(): void {
+    if (decoderFlushed) return;
+    decoderFlushed = true;
     sseBuffer += decoder.decode();
     for (const line of sseBuffer.split("\n")) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith("data: ")) continue;
-      const payload = trimmed.slice(6).trim();
-      if (!payload || payload === "[DONE]") continue;
-      try {
-        const parsed = JSON.parse(payload);
-        const usage = parsed.usage ?? parsed.response?.usage;
-        if (usage) {
-          if (usage.prompt_tokens) inputTokens = usage.prompt_tokens;
-          if (usage.completion_tokens) outputTokens = usage.completion_tokens;
-          if (!inputTokens && usage.input_tokens) inputTokens = usage.input_tokens;
-          if (!outputTokens && usage.output_tokens) outputTokens = usage.output_tokens;
-        }
-      } catch { /* skip */ }
+      extractUsageFromSSE(line.trim());
     }
+  }
 
-    streamDone = true;
-    if (resolveHolder.fn) {
-      const r = resolveHolder.fn;
-      resolveHolder.fn = null;
-      r({ value: undefined as any, done: true });
+  function extractUsageFromSSE(trimmed: string): void {
+    if (!trimmed.startsWith("data: ")) return;
+    const payload = trimmed.slice(6).trim();
+    if (!payload || payload === "[DONE]") return;
+    try {
+      const parsed = JSON.parse(payload);
+      const usage = parsed.usage ?? parsed.response?.usage ?? parsed.message?.usage;
+      if (usage) {
+        if (usage.prompt_tokens) inputTokens = usage.prompt_tokens;
+        if (usage.completion_tokens) outputTokens = usage.completion_tokens;
+        if (!inputTokens && usage.input_tokens) inputTokens = usage.input_tokens;
+        if (!outputTokens && usage.output_tokens) outputTokens = usage.output_tokens;
+      }
+    } catch { /* skip */ }
+  }
+
+  async function cancelProviderStream(): Promise<void> {
+    if (cancelled) return;
+    cancelled = true;
+    if (providerIterator.return) {
+      await providerIterator.return().catch(() => undefined);
     }
-  })();
+  }
 
-  // Create a pass-through async iterable for the transform
+  // Demand-driven pass-through: the transform's reads pull from the upstream
+  // provider stream directly, preserving backpressure without an unbounded queue.
   const passThrough: AsyncIterable<Uint8Array> = {
     [Symbol.asyncIterator]() {
       return {
-        next(): Promise<IteratorResult<Uint8Array>> {
-          if (chunkQueue.length > 0) {
-            return Promise.resolve({ value: chunkQueue.shift()!, done: false });
+        async next(): Promise<IteratorResult<Uint8Array>> {
+          if (streamDone || cancelled) {
+            return { value: undefined as any, done: true };
           }
-          if (streamDone) {
-            return Promise.resolve({ value: undefined as any, done: true });
+          const result = await providerIterator.next();
+          if (result.done) {
+            streamDone = true;
+            flushDecoder();
+            return { value: undefined as any, done: true };
           }
-          return new Promise((resolve) => { resolveHolder.fn = resolve; });
+          parseChunk(result.value);
+          return { value: result.value, done: false };
         },
-        return(): Promise<IteratorResult<Uint8Array>> {
-          return Promise.resolve({ value: undefined as any, done: true });
+        async return(): Promise<IteratorResult<Uint8Array>> {
+          streamDone = true;
+          await cancelProviderStream();
+          flushDecoder();
+          return { value: undefined as any, done: true };
+        },
+        async throw(error?: unknown): Promise<IteratorResult<Uint8Array>> {
+          streamDone = true;
+          await cancelProviderStream();
+          flushDecoder();
+          throw error;
         },
       };
     },
   };
 
-  await transformAndWrite(passThrough);
-  await producer;
+  try {
+    await transformAndWrite(passThrough);
+  } finally {
+    if (!streamDone) {
+      await cancelProviderStream();
+    }
+    flushDecoder();
+  }
 
   return { input_tokens: inputTokens, output_tokens: outputTokens };
 }

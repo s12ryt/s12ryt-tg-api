@@ -10,7 +10,7 @@
  *   - OTP 使用後立即失效（一次性）
  *   - Session 24 小時有效，過期自動清除
  *   - 每 10 分鐘清理過期的 OTP 和 Session
- *   - exchangeToken 時重新檢查用戶是否仍為 active
+ *   - exchangeToken 與每次請求時重新檢查用戶是否仍為 active
  */
 
 import crypto from "crypto";
@@ -173,7 +173,18 @@ export function webAuthMiddleware(req: Request, res: Response, next: NextFunctio
 
   // 每次請求重新校驗 isAdmin，不信任 session 創建時快取的值
   // 確保 ADMIN_ID 變更後權限能即時生效
-  req.webAuth = { tgUserId: info.tgUserId, isAdmin: info.tgUserId === config.ADMIN_ID };
+  const isAdmin = info.tgUserId === config.ADMIN_ID;
+
+  if (!isAdmin) {
+    const user = getUserByTgId(info.tgUserId);
+    if (!user || Number(user.is_active) !== 1) {
+      destroySession(token);
+      res.status(401).json({ error: "帳號已停用，請重新登入" });
+      return;
+    }
+  }
+
+  req.webAuth = { tgUserId: info.tgUserId, isAdmin };
   next();
 }
 

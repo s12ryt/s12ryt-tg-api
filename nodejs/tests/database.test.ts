@@ -1152,6 +1152,17 @@ describe("Backup / Restore", () => {
     expect(getUsers()).toHaveLength(0);
   });
 
+  it("importDatabase rejects foreign key violations and rolls back", () => {
+    addUser(111, "alice");
+    addApiKey(111);
+    const data = exportDatabase();
+    const tampered: BackupData = JSON.parse(JSON.stringify(data));
+    tampered.tables.api_keys[0].user_id = 999999;
+
+    expect(() => importDatabase(tampered)).toThrow(/foreign key violations|Invalid backup/);
+    expect(getKeysByUser(111)).toHaveLength(1);
+  });
+
   it("importDatabase throws on invalid format", () => {
     expect(() => importDatabase(null as unknown as BackupData)).toThrow();
     expect(() => importDatabase({} as BackupData)).toThrow();

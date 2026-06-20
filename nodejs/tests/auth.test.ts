@@ -278,6 +278,35 @@ describe("webAuthMiddleware", () => {
     expect(res.body.webAuth.tgUserId).toBe(MOCK_ADMIN_ID);
     expect(res.body.webAuth.isAdmin).toBe(true);
   });
+
+  it("invalidates non-admin session when user becomes inactive", async () => {
+    mockGetUserByTgId.mockReturnValue({ id: 1, tg_user_id: 88888, is_active: 1 });
+    const otp = generateLoginToken(88888);
+    const { sessionToken } = exchangeToken(otp)!;
+
+    mockGetUserByTgId.mockReturnValue({ id: 1, tg_user_id: 88888, is_active: 0 });
+    const res = await request(app)
+      .get("/test")
+      .set("Authorization", `Bearer ${sessionToken}`);
+
+    expect(res.status).toBe(401);
+    expect(res.body.error).toContain("停用");
+    expect(getSessionInfo(sessionToken)).toBeNull();
+  });
+
+  it("allows admin session without user database record", async () => {
+    mockGetUserByTgId.mockReturnValue(undefined);
+    const otp = generateLoginToken(MOCK_ADMIN_ID);
+    const { sessionToken } = exchangeToken(otp)!;
+
+    const res = await request(app)
+      .get("/test")
+      .set("Authorization", `Bearer ${sessionToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.webAuth.isAdmin).toBe(true);
+    expect(mockGetUserByTgId).not.toHaveBeenCalled();
+  });
 });
 
 // ===========================================================================

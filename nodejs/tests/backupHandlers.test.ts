@@ -130,6 +130,7 @@ function mockFetchResponse(body: string, ok = true): void {
   (global as any).fetch = vi.fn().mockResolvedValue({
     ok,
     status: ok ? 200 : 404,
+    headers: { get: vi.fn(() => null) },
     text: () => Promise.resolve(body),
   });
 }
@@ -221,6 +222,16 @@ describe("Backup Handlers", () => {
       const lastCall = ctx.reply.mock.calls.at(-1);
       expect(lastCall[0]).toContain("備份內容摘要");
       expect(lastCall[1]?.reply_markup).toBeDefined();
+    });
+
+    it("downloads backup file with timeout abort signal", async () => {
+      const ctx = makeCtx({
+        document: { file_id: "f1", file_name: "backup.json", mime_type: "application/json", file_size: 1024 },
+      });
+      await mocks.capturedHandlers["on:message:document"](ctx);
+
+      const fetchOptions = (global as any).fetch.mock.calls[0][1];
+      expect(fetchOptions.signal).toBeInstanceOf(AbortSignal);
     });
 
     it("non-admin: silently ignored", async () => {
