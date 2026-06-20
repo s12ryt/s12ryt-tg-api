@@ -397,6 +397,50 @@ describe("User Routes — Keys", () => {
     });
   });
 
+  describe("GET /web/api/keys/:id", () => {
+    it("returns 400 for invalid key ID", async () => {
+      const session = adminSession();
+      const res = await request(app)
+        .get("/web/api/keys/abc")
+        .set("Authorization", `Bearer ${session}`);
+
+      expect(res.status).toBe(400);
+    });
+
+    it("returns 403 when key belongs to another user (IDOR)", async () => {
+      // getKeysByUser returns a list NOT containing the requested id
+      vi.mocked(db.getKeysByUser).mockReturnValue([
+        { id: 1, key: "sk-key1", is_active: 1 },
+      ]);
+      const session = adminSession();
+      const res = await request(app)
+        .get("/web/api/keys/999")
+        .set("Authorization", `Bearer ${session}`);
+
+      expect(res.status).toBe(403);
+    });
+
+    it("returns full key value for own key", async () => {
+      vi.mocked(db.getKeysByUser).mockReturnValue([
+        {
+          id: 5,
+          key: "sk-s12ryt-mykey123456",
+          is_active: 1,
+          created_at: "2024-01-01",
+        },
+      ]);
+      const session = adminSession();
+      const res = await request(app)
+        .get("/web/api/keys/5")
+        .set("Authorization", `Bearer ${session}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.key.id).toBe(5);
+      expect(res.body.key.key).toBe("sk-s12ryt-mykey123456");
+      expect(res.body.key.created_at).toBe("2024-01-01");
+    });
+  });
+
   describe("DELETE /web/api/keys/:id", () => {
     it("returns 400 for invalid key ID", async () => {
       const session = adminSession();
