@@ -388,6 +388,21 @@ export async function* streamResponsesApi(
   // SSE buffer: accumulate partial lines across TCP chunk boundaries
   let sseBuffer = "";
 
+  // Helper: build the final completed response object — shared by finish and fallback paths
+  const buildCompletedResponse = (output: Record<string, any>[]): Record<string, any> => ({
+    ...baseResponse,
+    status: "completed",
+    completed_at: Math.floor(Date.now() / 1000),
+    output,
+    usage: {
+      input_tokens: totalInputTokens,
+      output_tokens: totalOutputTokens,
+      total_tokens: totalInputTokens + totalOutputTokens,
+      input_tokens_details: { cached_tokens: 0 },
+      output_tokens_details: { reasoning_tokens: 0 },
+    },
+  });
+
   for await (const chunk of providerStream) {
     sseBuffer += decoder.decode(chunk, { stream: true });
     const lines = sseBuffer.split("\n");
@@ -437,8 +452,9 @@ export async function* streamResponsesApi(
         }
       }
 
-      // --- Handle reasoning delta ---
-      if (delta.reasoning != null && delta.reasoning !== "") {
+      // --- Handle reasoning delta (some providers send reasoning_content instead of reasoning) ---
+      const reasoningDelta: string = delta.reasoning ?? delta.reasoning_content;
+      if (reasoningDelta != null && reasoningDelta !== "") {
         if (!reasoningItemEmitted) {
           reasoningItemEmitted = true;
           reasoningOutputIndex = outputItems.length;
@@ -457,14 +473,14 @@ export async function* streamResponsesApi(
           });
         }
 
-        reasoningText += delta.reasoning;
+        reasoningText += reasoningDelta;
         yield sseLine("response.reasoning_summary_text.delta", {
           type: "response.reasoning_summary_text.delta",
           sequence_number: ++localSeq,
           item_id: reasoningItemId,
           output_index: reasoningOutputIndex,
           summary_index: 0,
-          delta: delta.reasoning,
+          delta: reasoningDelta,
         });
       }
 
@@ -537,7 +553,6 @@ export async function* streamResponsesApi(
         }
 
         // Finalize tool calls first
-        const toolCallOutputs: Record<string, any>[] = [];
         for (const [tcIdx, tcBuf] of toolCallBuffers) {
           const fcId = genId("fc");
           const callId = tcBuf.id || `call_${tcIdx}`;
@@ -549,7 +564,6 @@ export async function* streamResponsesApi(
             arguments: tcBuf.arguments,
             status: "completed",
           };
-          toolCallOutputs.push(fcItem);
 
           // Emit function_call output_item.added + done
           const fcOutputIndex = outputItems.length;
@@ -608,11 +622,8 @@ export async function* streamResponsesApi(
         }
 
         // Build completed response
-        const completedResponse = {
-          ...baseResponse,
-          status: "completed",
-          completed_at: Math.floor(Date.now() / 1000),
-          output: outputItems.map((item, idx) => {
+        const completedResponse = buildCompletedResponse(
+          outputItems.map((item) => {
             if (item.type === "message") {
               return {
                 type: "message",
@@ -625,15 +636,8 @@ export async function* streamResponsesApi(
               };
             }
             return item;
-          }),
-          usage: {
-            input_tokens: totalInputTokens,
-            output_tokens: totalOutputTokens,
-            total_tokens: totalInputTokens + totalOutputTokens,
-            input_tokens_details: { cached_tokens: 0 },
-            output_tokens_details: { reasoning_tokens: 0 },
-          },
-        };
+          })
+        );
 
         yield sseLine("response.completed", {
           type: "response.completed",
@@ -691,30 +695,18 @@ export async function* streamResponsesApi(
       content: [{ type: "output_text", text: accumulatedText, annotations: [], logprobs: [] }],
     });
   }
-  for (const [, tcBuf] of toolCallBuffers) {
+  for (const [tcIdx, tcBuf] of toolCallBuffers) {
     finalOutput.push({
       type: "function_call",
       id: genId("fc"),
-      call_id: tcBuf.id,
+      call_id: tcBuf.id || `call_${tcIdx}`,
       name: tcBuf.name,
       arguments: tcBuf.arguments,
       status: "completed",
     });
   }
 
-  const completedResponse = {
-    ...baseResponse,
-    status: "completed",
-    completed_at: Math.floor(Date.now() / 1000),
-    output: finalOutput,
-    usage: {
-      input_tokens: totalInputTokens,
-      output_tokens: totalOutputTokens,
-      total_tokens: totalInputTokens + totalOutputTokens,
-      input_tokens_details: { cached_tokens: 0 },
-      output_tokens_details: { reasoning_tokens: 0 },
-    },
-  };
+  const completedResponse = buildCompletedResponse(finalOutput);
 
   yield sseLine("response.completed", {
     type: "response.completed",

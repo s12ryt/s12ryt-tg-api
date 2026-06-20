@@ -37,6 +37,7 @@ export function convertAnthropicInputToMessages(
   messages: Array<{
     role: string;
     content: string | any[];
+    reasoning?: string;
     tool_call_id?: string;
     tool_calls?: Array<{ id: string; type: "function"; function: { name: string; arguments: string } }>;
   }>;
@@ -53,6 +54,7 @@ export function convertAnthropicInputToMessages(
   const messages: Array<{
     role: string;
     content: string | any[];
+    reasoning?: string;
     tool_call_id?: string;
     tool_calls?: Array<{ id: string; type: "function"; function: { name: string; arguments: string } }>;
   }> = [];
@@ -152,18 +154,21 @@ function convertAnthropicContentBlocks(
 ): Array<{
   role: string;
   content: string | any[];
+  reasoning?: string;
   tool_call_id?: string;
   tool_calls?: Array<{ id: string; type: "function"; function: { name: string; arguments: string } }>;
 }> {
   const results: Array<{
     role: string;
     content: string | any[];
+    reasoning?: string;
     tool_call_id?: string;
     tool_calls?: Array<{ id: string; type: "function"; function: { name: string; arguments: string } }>;
   }> = [];
 
   const contentParts: any[] = [];
   const toolCalls: Array<{ id: string; type: "function"; function: { name: string; arguments: string } }> = [];
+  let thinkingText = "";
 
   for (const block of blocks) {
     const btype = block.type ?? "text";
@@ -188,8 +193,13 @@ function convertAnthropicContentBlocks(
           arguments: typeof block.input === "string" ? block.input : JSON.stringify(block.input ?? {}),
         },
       });
+    } else if (btype === "thinking") {
+      // Preserve thinking/reasoning blocks — attached as `reasoning` field on the message
+      thinkingText += block.thinking ?? "";
     } else if (btype === "tool_result") {
-      // tool_result becomes a separate tool message
+      // tool_result becomes a separate tool message.
+      // LIMITATION: OpenAI tool messages only accept string content, so image
+      // blocks within tool_result are silently dropped. Only text is extracted.
       const resultContent =
         typeof block.content === "string"
           ? block.content
@@ -208,19 +218,25 @@ function convertAnthropicContentBlocks(
   }
 
   // Build the primary message for this role
+  const reasoningField = thinkingText ? { reasoning: thinkingText } : {};
+
   if (toolCalls.length > 0) {
     results.push({
       role: "assistant",
       content: contentParts.length > 0 ? contentParts : "",
       tool_calls: toolCalls,
+      ...reasoningField,
     });
   } else if (contentParts.length > 0) {
     // Flatten single text part to plain string (cleaner for OpenAI)
     if (contentParts.length === 1 && contentParts[0].type === "text") {
-      results.push({ role: defaultRole, content: contentParts[0].text });
+      results.push({ role: defaultRole, content: contentParts[0].text, ...reasoningField });
     } else {
-      results.push({ role: defaultRole, content: contentParts });
+      results.push({ role: defaultRole, content: contentParts, ...reasoningField });
     }
+  } else if (thinkingText) {
+    // Only thinking blocks — emit message with reasoning and empty content
+    results.push({ role: defaultRole, content: "", ...reasoningField });
   }
 
   return results;
@@ -283,11 +299,13 @@ export function convertChatCompletionToAnthropic(
   // Tool calls → tool_use content blocks
   if (Array.isArray(message.tool_calls)) {
     for (const tc of message.tool_calls) {
-      let inputObj: any = {};
+      const rawArgs = tc.function?.arguments ?? "{}";
+      let inputObj: any;
       try {
-        inputObj = JSON.parse(tc.function?.arguments ?? "{}");
+        inputObj = JSON.parse(rawArgs);
       } catch {
-        inputObj = {};
+        // Preserve raw arguments rather than silently dropping to {}
+        inputObj = { raw_arguments: rawArgs };
       }
       content.push({
         type: "tool_use",
@@ -535,11 +553,12 @@ export async function* streamAnthropicApi(
         for (const [, tcBuf] of toolCallBuffers) {
           const toolBlockIndex = ++currentBlockIndex;
 
-          let inputObj: any = {};
+          let inputObj: any;
           try {
             inputObj = JSON.parse(tcBuf.arguments);
           } catch {
-            inputObj = {};
+            // Preserve raw arguments rather than silently dropping to {}
+            inputObj = { raw_arguments: tcBuf.arguments };
           }
 
           yield sseLine("content_block_start", {

@@ -1,7 +1,9 @@
 /**
  * Anthropic (Claude) provider adapter.
  *
- * Converts between OpenAI and Anthropic API formats.
+ * Exposes two public functions:
+ * - messagesApi():    Direct pass-through for Anthropic Messages API format.
+ * - chatCompletion(): Converts Chat Completions → Messages → sends → converts back.
  */
 
 import { v4 as uuidv4 } from "uuid";
@@ -84,6 +86,57 @@ export async function chatCompletion(
   };
 
   return doRequest(url, headers, anthropicBody, timeout, isStream, requestData.model);
+}
+
+/**
+ * Send an Anthropic Messages API request directly to upstream.
+ *
+ * Fast path: used when our /v1/messages endpoint receives a request
+ * and the provider is anthropic type — no format conversion needed.
+ *
+ * Preserves:
+ * - MODEL_MAP (model name mapping, e.g. "claude-4-sonnet" → "claude-sonnet-4-20250514")
+ * - thinking_effort injection (unified field → Anthropic thinking.budget_tokens)
+ *
+ * Does NOT do:
+ * - Request format conversion (body is already Anthropic Messages format)
+ * - Response format conversion (returns native Anthropic JSON / SSE)
+ */
+export async function messagesApi(
+  requestData: Record<string, any>,
+  providerConfig: ProviderConfig
+): Promise<Record<string, any> | AsyncGenerator<Uint8Array>> {
+  const baseUrl = (providerConfig.baseUrl ?? "https://api.anthropic.com").replace(
+    /\/+$/,
+    ""
+  );
+  const apiKey = providerConfig.apiKey;
+  const timeout = providerConfig.timeout ?? DEFAULT_TIMEOUT;
+  const extraHeaders = providerConfig.extraHeaders ?? {};
+  const isStream = requestData.stream === true;
+
+  // Apply MODEL_MAP — clone body to avoid mutating the caller's request object
+  const model = requestData.model ?? "claude-3-sonnet";
+  const mappedModel = MODEL_MAP[model] ?? model;
+  const body: Record<string, any> = { ...requestData, model: mappedModel };
+
+  // Inject thinking parameters from unified thinking_effort field
+  // (set by preprocessThinking at server entry; injectForAnthropic expects Anthropic-format body)
+  if (requestData.thinking_effort) {
+    injectForAnthropic(body, requestData.thinking_effort as ThinkingLevel);
+    delete body.thinking_effort;
+  }
+
+  const url = `${baseUrl}/v1/messages`;
+
+  const headers: Record<string, string> = {
+    "x-api-key": apiKey,
+    "anthropic-version": ANTHROPIC_VERSION,
+    "Content-Type": "application/json",
+    ...extraHeaders,
+  };
+
+  return doPassthroughRequest(url, headers, body, timeout, isStream);
 }
 
 // ---------------------------------------------------------------------------
@@ -297,6 +350,117 @@ async function doRequest(
   }
 
   throw wrapError(lastError!);
+}
+
+// ---------------------------------------------------------------------------
+// HTTP request with retry — pass-through (no response format conversion)
+// ---------------------------------------------------------------------------
+
+/**
+ * Same retry/retry-policy as doRequest, but returns native Anthropic JSON/SSE
+ * without converting to OpenAI format. Used by the fast path (messagesApi).
+ */
+async function doPassthroughRequest(
+  url: string,
+  headers: Record<string, string>,
+  body: Record<string, any>,
+  timeout: number,
+  isStream: boolean
+): Promise<Record<string, any> | AsyncGenerator<Uint8Array>> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      if (isStream) {
+        return streamPassthrough(url, headers, body, timeout);
+      }
+
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeout);
+
+      const resp = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+
+      if (!resp.ok) {
+        const errorBody = await resp.text();
+        const error = new Error(`Anthropic API error ${resp.status}: ${errorBody}`);
+        (error as any).status = resp.status;
+        throw error;
+      }
+
+      // Native Anthropic Messages API response — return as-is
+      return (await resp.json()) as Record<string, any>;
+    } catch (err: any) {
+      lastError = err;
+      const status: number | undefined = err.status;
+
+      // Don't retry client errors (4xx) except 429
+      if (status && status >= 400 && status < 500 && status !== 429) {
+        throw wrapError(err);
+      }
+
+      if (attempt < MAX_RETRIES) {
+        console.warn(
+          `Anthropic pass-through request failed (attempt ${attempt + 1}/${MAX_RETRIES + 1}): ${err} – retrying`
+        );
+        await sleep(RETRY_DELAY * (attempt + 1));
+        continue;
+      }
+
+      throw wrapError(err);
+    }
+  }
+
+  throw wrapError(lastError!);
+}
+
+// ---------------------------------------------------------------------------
+// Streaming: pass-through (native Anthropic SSE, no conversion)
+// ---------------------------------------------------------------------------
+
+/**
+ * Yield native Anthropic SSE chunks as-is — no OpenAI conversion.
+ * Used by the fast path (messagesApi) for streaming requests.
+ */
+async function* streamPassthrough(
+  url: string,
+  headers: Record<string, string>,
+  body: Record<string, any>,
+  timeout: number
+): AsyncGenerator<Uint8Array> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeout);
+
+  const resp = await fetch(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+    signal: controller.signal,
+  });
+  clearTimeout(timer);
+
+  if (!resp.ok) {
+    const errorBody = await resp.text();
+    throw new Error(`Anthropic API error ${resp.status}: ${errorBody}`);
+  }
+
+  const reader = resp.body?.getReader();
+  if (!reader) throw new Error("No response body for streaming");
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      yield value;
+    }
+  } finally {
+    reader.releaseLock();
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -12,7 +12,7 @@ import request from "supertest";
 // Hoisted values — available inside vi.mock() factories
 // ---------------------------------------------------------------------------
 
-const { mockChatCompletion, VALID_KEY, INACTIVE_USER_KEY } = vi.hoisted(() => {
+const { mockChatCompletion, mockMessagesApi, VALID_KEY, INACTIVE_USER_KEY } = vi.hoisted(() => {
   const mockFn = vi.fn(() =>
     Promise.resolve({
       id: "chatcmpl-test123",
@@ -29,8 +29,21 @@ const { mockChatCompletion, VALID_KEY, INACTIVE_USER_KEY } = vi.hoisted(() => {
       usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
     }),
   );
+  // Native Anthropic Messages API response (for fast path /v1/messages → anthropic)
+  const mockMsgFn = vi.fn(() =>
+    Promise.resolve({
+      id: "msg_test123",
+      type: "message",
+      role: "assistant",
+      model: "claude-3.5-sonnet",
+      content: [{ type: "text", text: "Hello from mock!" }],
+      stop_reason: "end_turn",
+      usage: { input_tokens: 10, output_tokens: 5 },
+    }),
+  );
   return {
     mockChatCompletion: mockFn,
+    mockMessagesApi: mockMsgFn,
     VALID_KEY: "sk-s12ryt-valid-test-key",
     INACTIVE_USER_KEY: "sk-s12ryt-inactive-user-key",
   };
@@ -226,6 +239,7 @@ vi.mock("../src/api/providers/openaiResponse.js", () => ({
 
 vi.mock("../src/api/providers/anthropic.js", () => ({
   chatCompletion: mockChatCompletion,
+  messagesApi: mockMessagesApi,
 }));
 
 vi.mock("../src/api/providers/google.js", () => ({
