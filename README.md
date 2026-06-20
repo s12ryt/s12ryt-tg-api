@@ -306,11 +306,17 @@ curl http://localhost:8000/v1/chat/completions \
 
 ### 格式轉換矩陣
 
-| 請求端點 | openai_chat 供應商 | openai_response 供應商 | anthropic 供應商 | google 供應商 |
-|----------|-------------------|----------------------|-----------------|--------------|
-| `/v1/chat/completions` | 直接轉發 | chat→responses→chat | chat→messages→chat | 直接轉發 |
-| `/v1/responses` | responses→chat→responses | 直接轉發 | responses→chat→messages→responses | responses→chat→responses |
-| `/v1/messages` | messages→chat→messages | messages→chat→responses→messages | 直接轉發 | messages→chat→messages |
+所有路徑以 **OpenAI Chat Completions 為中間樞紐格式（Hub）**，括號內為格式轉換次數（越少越高效）。
+
+| 請求端點 | openai_chat | openai_response | anthropic | google |
+|----------|-------------|-----------------|-----------|--------|
+| `/v1/chat/completions` | ✅ 直接轉發（0次） | chat→responses→chat（2次） | chat→messages→chat（2次） | chat→gemini→chat（2次） |
+| `/v1/responses` | responses→chat→responses（2次） | ✅ 直接轉發（0次）＊ | responses→chat→messages→responses（4次） | responses→chat→gemini→chat→responses（4次） |
+| `/v1/messages` | messages→chat→messages（2次） | messages→chat→responses→messages（4次） | ✅ 直接轉發（0次） | messages→chat→gemini→chat→messages（4次） |
+
+> ＊ `/v1/responses → openai_response` 在非 Coding Mode 下有直通優化（`server.ts` fast-path），跳過 Chat 中間格式。
+>
+> 💡 **效率建議**：讓入口端點格式與供應商原生格式一致可獲得最佳效率（0 次轉換）。跨兩種格式鴻溝的路徑（4 次）延遲與資訊流失風險最高，應儘量避免。
 
 ## 專案結構
 
