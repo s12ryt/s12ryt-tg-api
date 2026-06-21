@@ -753,6 +753,104 @@ def convert_chat_tools_to_responses_tools(
 # Output conversion: Responses API → Chat Completions (reverse)
 # ---------------------------------------------------------------------------
 
+_MESSAGE_TEXT_PART_TYPES = {"output_text", "text"}
+_REASONING_TEXT_PART_TYPES = {
+    "reasoning_text",
+    "summary_text",
+    "summary",
+    "text",
+    "output_text",
+}
+
+
+def _string_value(value: Any) -> str:
+    return value if isinstance(value, str) else ""
+
+
+def _extract_text_from_parts(
+    parts: Any,
+    allowed_types: set[str],
+    fields: tuple[str, ...],
+    allow_untyped: bool = False,
+) -> str:
+    if not isinstance(parts, list):
+        return ""
+
+    text = ""
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        part_type = _string_value(part.get("type"))
+        if part_type:
+            if part_type not in allowed_types:
+                continue
+        elif not allow_untyped:
+            continue
+        for field in fields:
+            text += _string_value(part.get(field))
+    return text
+
+
+def _extract_message_text_from_item(item: Any) -> str:
+    if not isinstance(item, dict):
+        return ""
+    return (
+        _extract_text_from_parts(
+            item.get("content"),
+            _MESSAGE_TEXT_PART_TYPES,
+            ("text", "content"),
+        )
+        + _string_value(item.get("text"))
+    )
+
+
+def _extract_reasoning_text_from_item(item: Any) -> str:
+    if not isinstance(item, dict):
+        return ""
+    return (
+        _extract_text_from_parts(
+            item.get("summary"),
+            _REASONING_TEXT_PART_TYPES,
+            ("text",),
+            True,
+        )
+        + _extract_text_from_parts(
+            item.get("content"),
+            _REASONING_TEXT_PART_TYPES,
+            ("text", "content", "reasoning", "reasoning_content"),
+            True,
+        )
+        + _string_value(item.get("text"))
+        + _string_value(item.get("reasoning"))
+        + _string_value(item.get("reasoning_content"))
+    )
+
+
+def _extract_reasoning_text_from_output(output: Any) -> str:
+    if not isinstance(output, list):
+        return ""
+    text = ""
+    for item in output:
+        if not isinstance(item, dict) or item.get("type") != "reasoning":
+            continue
+        text += _extract_reasoning_text_from_item(item)
+    return text
+
+
+def _get_reasoning_suffix(final_reasoning: str, streamed_reasoning: str) -> str:
+    if not final_reasoning:
+        return ""
+    if not streamed_reasoning:
+        return final_reasoning
+    if final_reasoning.startswith(streamed_reasoning):
+        return final_reasoning[len(streamed_reasoning):]
+    return ""
+
+
+def _get_delta_text(parsed: dict[str, Any]) -> str:
+    return _string_value(parsed.get("delta"))
+
+
 def convert_responses_to_chat_completion(
     responses_result: dict[str, Any],
     model: str,
@@ -760,24 +858,22 @@ def convert_responses_to_chat_completion(
     """Convert a Responses API result to Chat Completions format."""
 
     output = responses_result.get("output", [])
+    if not isinstance(output, list):
+        output = []
     text = ""
     reasoning_content = ""
     tool_calls: list[dict[str, Any]] = []
 
     for item in output:
+        if not isinstance(item, dict):
+            continue
         item_type = item.get("type", "")
 
         if item_type == "message":
-            content_parts = item.get("content", [])
-            for part in content_parts:
-                if part.get("type") == "output_text":
-                    text += part.get("text", "")
+            text += _extract_message_text_from_item(item)
 
         elif item_type == "reasoning":
-            summaries = item.get("summary", [])
-            for s in summaries:
-                if s.get("type") == "summary_text":
-                    reasoning_content += s.get("text", "")
+            reasoning_content += _extract_reasoning_text_from_item(item)
 
         elif item_type == "function_call":
             tool_calls.append({
@@ -853,6 +949,8 @@ async def stream_chat_from_responses(
         return f"data: {json.dumps(chunk)}\n\n".encode("utf-8")
 
     buffer = ""
+    current_event = ""
+    streamed_reasoning_content = ""
 
     async for raw_chunk in provider_stream:
         text = raw_chunk.decode("utf-8") if isinstance(raw_chunk, bytes) else str(raw_chunk)
@@ -860,7 +958,6 @@ async def stream_chat_from_responses(
         lines = buffer.split("\n")
         buffer = lines.pop()  # keep incomplete trailing line
 
-        current_event = ""
         for line in lines:
             stripped = line.strip()
             if stripped.startswith("event: "):
@@ -882,10 +979,16 @@ async def stream_chat_from_responses(
                 continue
 
             if current_event == "response.output_text.delta":
-                yield _chat_chunk({"content": parsed.get("delta", "")})
+                yield _chat_chunk({"content": _get_delta_text(parsed)})
 
-            elif current_event == "response.reasoning_summary_text.delta":
-                yield _chat_chunk({"reasoning_content": parsed.get("delta", "")})
+            elif current_event in {
+                "response.reasoning_summary_text.delta",
+                "response.reasoning_text.delta",
+            }:
+                reasoning_delta = _get_delta_text(parsed)
+                if reasoning_delta:
+                    streamed_reasoning_content += reasoning_delta
+                    yield _chat_chunk({"reasoning_content": reasoning_delta})
 
             elif current_event == "response.function_call_arguments.delta":
                 yield _chat_chunk({
@@ -896,7 +999,7 @@ async def stream_chat_from_responses(
                             "type": "function",
                             "function": {
                                 "name": "",
-                                "arguments": parsed.get("delta", ""),
+                                "arguments": _get_delta_text(parsed),
                             },
                         }
                     ],
@@ -906,9 +1009,18 @@ async def stream_chat_from_responses(
                 resp = parsed.get("response", {})
                 usage_data = resp.get("usage", {})
                 output = resp.get("output", [])
-                has_tool_calls = any(
-                    i.get("type") == "function_call" for i in output
+                if not isinstance(output, list):
+                    output = []
+                reasoning_suffix = _get_reasoning_suffix(
+                    _extract_reasoning_text_from_output(output),
+                    streamed_reasoning_content,
                 )
+                has_tool_calls = any(
+                    isinstance(i, dict) and i.get("type") == "function_call"
+                    for i in output
+                )
+                if reasoning_suffix:
+                    yield _chat_chunk({"reasoning_content": reasoning_suffix})
                 yield _chat_chunk(
                     {},
                     finish_reason="tool_calls" if has_tool_calls else "stop",

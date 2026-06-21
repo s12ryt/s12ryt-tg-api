@@ -841,6 +841,85 @@ export function convertChatToolsToResponsesTools(
 // Output conversion: Responses API → Chat Completions (reverse)
 // ---------------------------------------------------------------------------
 
+const MESSAGE_TEXT_PART_TYPES = new Set(["output_text", "text"]);
+const REASONING_TEXT_PART_TYPES = new Set([
+  "reasoning_text",
+  "summary_text",
+  "summary",
+  "text",
+  "output_text",
+]);
+
+function isRecord(value: unknown): value is Record<string, any> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function extractTextFromParts(
+  parts: unknown,
+  allowedTypes: Set<string>,
+  fields: string[],
+  allowUntyped = false
+): string {
+  if (!Array.isArray(parts)) return "";
+
+  let text = "";
+  for (const part of parts) {
+    if (!isRecord(part)) continue;
+    const type = stringValue(part.type);
+    if (type ? !allowedTypes.has(type) : !allowUntyped) continue;
+    for (const field of fields) {
+      text += stringValue(part[field]);
+    }
+  }
+  return text;
+}
+
+function extractMessageTextFromItem(item: unknown): string {
+  if (!isRecord(item)) return "";
+  return (
+    extractTextFromParts(item.content, MESSAGE_TEXT_PART_TYPES, ["text", "content"]) +
+    stringValue(item.text)
+  );
+}
+
+function extractReasoningTextFromItem(item: unknown): string {
+  if (!isRecord(item)) return "";
+  return (
+    extractTextFromParts(item.summary, REASONING_TEXT_PART_TYPES, ["text"], true) +
+    extractTextFromParts(item.content, REASONING_TEXT_PART_TYPES, ["text", "content", "reasoning", "reasoning_content"], true) +
+    stringValue(item.text) +
+    stringValue(item.reasoning) +
+    stringValue(item.reasoning_content)
+  );
+}
+
+function extractReasoningTextFromOutput(output: unknown): string {
+  if (!Array.isArray(output)) return "";
+  let text = "";
+  for (const item of output) {
+    if (!isRecord(item) || item.type !== "reasoning") continue;
+    text += extractReasoningTextFromItem(item);
+  }
+  return text;
+}
+
+function getReasoningSuffix(finalReasoning: string, streamedReasoning: string): string {
+  if (!finalReasoning) return "";
+  if (!streamedReasoning) return finalReasoning;
+  if (finalReasoning.startsWith(streamedReasoning)) {
+    return finalReasoning.slice(streamedReasoning.length);
+  }
+  return "";
+}
+
+function getDeltaText(parsed: Record<string, any>): string {
+  return stringValue(parsed.delta);
+}
+
 /**
  * Convert a Responses API result to Chat Completions format.
  */
@@ -848,28 +927,19 @@ export function convertResponsesToChatCompletion(
   responsesResult: Record<string, any>,
   model: string
 ): Record<string, any> {
-  const output = responsesResult.output ?? [];
+  const output = Array.isArray(responsesResult.output) ? responsesResult.output : [];
   let text = "";
   let reasoningContent = "";
   const toolCalls: Record<string, any>[] = [];
 
   for (const item of output) {
+    if (!isRecord(item)) continue;
     const itemType = item.type ?? "";
 
     if (itemType === "message") {
-      const contentParts = item.content ?? [];
-      for (const part of contentParts) {
-        if (part.type === "output_text") {
-          text += part.text ?? "";
-        }
-      }
+      text += extractMessageTextFromItem(item);
     } else if (itemType === "reasoning") {
-      const summaries = item.summary ?? [];
-      for (const s of summaries) {
-        if (s.type === "summary_text") {
-          reasoningContent += s.text ?? "";
-        }
-      }
+      reasoningContent += extractReasoningTextFromItem(item);
     } else if (itemType === "function_call") {
       toolCalls.push({
         id: item.call_id ?? item.id ?? "",
@@ -943,6 +1013,8 @@ export async function* streamChatFromResponses(
   }
 
   let buffer = "";
+  let currentEvent = "";
+  let streamedReasoningContent = "";
 
   for await (const rawChunk of providerStream) {
     const text = decoder.decode(rawChunk, { stream: true });
@@ -950,7 +1022,6 @@ export async function* streamChatFromResponses(
     const lines = buffer.split("\n");
     buffer = lines.pop() ?? ""; // keep incomplete trailing line
 
-    let currentEvent = "";
     for (const line of lines) {
       const stripped = line.trim();
       if (stripped.startsWith("event: ")) {
@@ -977,9 +1048,16 @@ export async function* streamChatFromResponses(
       }
 
       if (currentEvent === "response.output_text.delta") {
-        yield chatChunk({ content: parsed.delta ?? "" });
-      } else if (currentEvent === "response.reasoning_summary_text.delta") {
-        yield chatChunk({ reasoning_content: parsed.delta ?? "" });
+        yield chatChunk({ content: getDeltaText(parsed) });
+      } else if (
+        currentEvent === "response.reasoning_summary_text.delta" ||
+        currentEvent === "response.reasoning_text.delta"
+      ) {
+        const reasoningDelta = getDeltaText(parsed);
+        if (reasoningDelta) {
+          streamedReasoningContent += reasoningDelta;
+          yield chatChunk({ reasoning_content: reasoningDelta });
+        }
       } else if (currentEvent === "response.function_call_arguments.delta") {
         yield chatChunk({
           tool_calls: [
@@ -987,17 +1065,24 @@ export async function* streamChatFromResponses(
               index: parsed.output_index ?? 0,
               id: parsed.call_id ?? "",
               type: "function",
-              function: { name: "", arguments: parsed.delta ?? "" },
+              function: { name: "", arguments: getDeltaText(parsed) },
             },
           ],
         });
       } else if (currentEvent === "response.completed") {
         const resp = parsed.response ?? {};
         const usageData = resp.usage ?? {};
-        const respOutput = resp.output ?? [];
-        const hasToolCalls = respOutput.some(
-          (i: Record<string, any>) => i.type === "function_call"
+        const respOutput = Array.isArray(resp.output) ? resp.output : [];
+        const reasoningSuffix = getReasoningSuffix(
+          extractReasoningTextFromOutput(respOutput),
+          streamedReasoningContent
         );
+        const hasToolCalls = respOutput.some(
+          (item: unknown) => isRecord(item) && item.type === "function_call"
+        );
+        if (reasoningSuffix) {
+          yield chatChunk({ reasoning_content: reasoningSuffix });
+        }
         yield chatChunk(
           {},
           hasToolCalls ? "tool_calls" : "stop",

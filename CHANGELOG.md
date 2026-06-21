@@ -2,6 +2,11 @@
 
 所有版本變更記錄。本檔案由 `npm run release` 自動維護。
 
+## [1.7.11] - 2026-06-21
+
+### 📝 Documentation
+- add reasoning_content output format for Thinking Effort (26d21cb)
+
 ## [1.7.10] - 2026-06-21
 
 ### 🐛 Bug Fixes
