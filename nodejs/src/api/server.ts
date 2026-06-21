@@ -180,6 +180,7 @@ function lookupModelDb(modelName: string): ResolvedProvider {
 interface DispatchResult {
   result: any;
   modelName: string;
+  upstreamModelName: string;
   providerName: string;
   providerType: string;
   providerId: number;
@@ -244,6 +245,7 @@ async function dispatchWithFallback(
         return {
           result,
           modelName: fbModel,
+          upstreamModelName: fbResolved.originalModel,
           providerName: fbResolved.providerName,
           providerType: fbResolved.providerType,
           providerId: fbResolved.providerId,
@@ -281,6 +283,7 @@ async function dispatchWithFallback(
       return {
         result,
         modelName,
+        upstreamModelName: resolved.originalModel,
         providerName: resolved.providerName,
         providerType: resolved.providerType,
         providerId: resolved.providerId,
@@ -628,7 +631,7 @@ app.post(
         return;
       }
 
-      const { result, modelName: actualModel, providerName: dispProviderName, providerType, providerId, providerConfig, inputPrice, outputPrice } = dispatch;
+      const { result, modelName: actualModel, upstreamModelName, providerName: dispProviderName, providerType, providerId, providerConfig, inputPrice, outputPrice } = dispatch;
       const isCodingMode = originalModel === "coding-mode";
 
       const isStream = body.stream === true;
@@ -651,7 +654,7 @@ app.post(
             timestamp: new Date().toISOString(),
             path: "/v1/chat/completions",
             model: originalModel,
-            actualModel,
+            actualModel: upstreamModelName,
             providerName: dispProviderName,
             username: req.auth ? String(req.auth.tgUserId) : "unknown",
             body: { ...body, model: originalModel },
@@ -666,7 +669,7 @@ app.post(
             timestamp: new Date().toISOString(),
             path: "/v1/chat/completions",
             model: originalModel,
-            actualModel,
+            actualModel: upstreamModelName,
             providerName: dispProviderName,
             username: req.auth ? String(req.auth.tgUserId) : "unknown",
             body: { ...body, model: originalModel },
@@ -690,7 +693,7 @@ app.post(
             timestamp: new Date().toISOString(),
             path: "/v1/chat/completions",
             model: originalModel,
-            actualModel,
+            actualModel: upstreamModelName,
             providerName: dispProviderName,
             username: req.auth ? String(req.auth.tgUserId) : "unknown",
             body: { ...body, model: originalModel },
@@ -957,7 +960,7 @@ app.post(
         return;
       }
 
-      const { result, modelName: actualModel, providerName: respProviderName, providerType: pt, providerId: pid, providerConfig: pcfg, inputPrice: ip, outputPrice: op } = dispatch;
+      const { result, modelName: actualModel, upstreamModelName, providerName: respProviderName, providerType: pt, providerId: pid, providerConfig: pcfg, inputPrice: ip, outputPrice: op } = dispatch;
       providerType = pt;
       providerId = pid;
       providerConfig = pcfg;
@@ -995,7 +998,7 @@ app.post(
             timestamp: new Date().toISOString(),
             path: "/v1/responses",
             model: originalModelResp,
-            actualModel,
+            actualModel: upstreamModelName,
             providerName: respProviderName,
             username: req.auth ? String(req.auth.tgUserId) : "unknown",
             body: { ...body },
@@ -1011,7 +1014,7 @@ app.post(
             timestamp: new Date().toISOString(),
             path: "/v1/responses",
             model: originalModelResp,
-            actualModel,
+            actualModel: upstreamModelName,
             providerName: respProviderName,
             username: req.auth ? String(req.auth.tgUserId) : "unknown",
             body: { ...body },
@@ -1042,7 +1045,7 @@ app.post(
             timestamp: new Date().toISOString(),
             path: "/v1/responses",
             model: originalModelResp,
-            actualModel,
+            actualModel: upstreamModelName,
             providerName: respProviderName,
             username: req.auth ? String(req.auth.tgUserId) : "unknown",
             body: { ...body },
@@ -1286,7 +1289,7 @@ app.post(
         return;
       }
 
-      const { result, modelName: actualModel, providerName: msgProviderName, providerType, providerId, providerConfig, inputPrice, outputPrice } = dispatch;
+      const { result, modelName: actualModel, upstreamModelName, providerName: msgProviderName, providerType, providerId, providerConfig, inputPrice, outputPrice } = dispatch;
       const isCodingModeMsg = originalModelMsg === "coding-mode";
 
       // Streaming: convert OpenAI SSE → Anthropic SSE
@@ -1311,7 +1314,7 @@ app.post(
             timestamp: new Date().toISOString(),
             path: "/v1/messages",
             model: originalModelMsg,
-            actualModel,
+            actualModel: upstreamModelName,
             providerName: msgProviderName,
             username: req.auth ? String(req.auth.tgUserId) : "unknown",
             body: { ...body },
@@ -1326,7 +1329,7 @@ app.post(
             timestamp: new Date().toISOString(),
             path: "/v1/messages",
             model: originalModelMsg,
-            actualModel,
+            actualModel: upstreamModelName,
             providerName: msgProviderName,
             username: req.auth ? String(req.auth.tgUserId) : "unknown",
             body: { ...body },
@@ -1351,7 +1354,7 @@ app.post(
             timestamp: new Date().toISOString(),
             path: "/v1/messages",
             model: originalModelMsg,
-            actualModel,
+            actualModel: upstreamModelName,
             providerName: msgProviderName,
             username: req.auth ? String(req.auth.tgUserId) : "unknown",
             body: { ...body },

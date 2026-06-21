@@ -169,6 +169,9 @@ vi.mock("../src/db/database.js", () => {
       return null;
     }),
     lookupModelCached: vi.fn((modelName: string) => {
+      if (modelName === "alias-gpt") {
+        return { ...MOCK_OPENAI_PROVIDER, originalModel: "gpt-4o" };
+      }
       if (modelName === "gpt-4o" || modelName === "gpt-4o-mini") {
         return { ...MOCK_OPENAI_PROVIDER, originalModel: modelName };
       }
@@ -177,7 +180,7 @@ vi.mock("../src/db/database.js", () => {
       }
       return undefined;
     }),
-    getAllCachedModelNames: vi.fn(() => ["gpt-4o", "gpt-4o-mini", "claude-3.5-sonnet", "claude-3-haiku"]),
+    getAllCachedModelNames: vi.fn(() => ["alias-gpt", "gpt-4o", "gpt-4o-mini", "claude-3.5-sonnet", "claude-3-haiku"]),
     getUserByTgId: vi.fn(() => undefined),
     getActiveCodingForApiKey: vi.fn(() => null),
     incrementCodingSessionStats: vi.fn(),
@@ -251,6 +254,7 @@ vi.mock("../src/api/providers/google.js", () => ({
 // ---------------------------------------------------------------------------
 
 import app from "../src/api/server.js";
+import { clearApiLogs, getApiLogs } from "../src/api/apiLogStore.js";
 
 // ---------------------------------------------------------------------------
 // Constants & helpers
@@ -494,6 +498,78 @@ describe("TestChatCompletionsSuccess", () => {
     expect(res.status).toBe(200);
     const configArg = mockChatCompletion.mock.calls[0][1];
     expect(configArg.baseUrl).toBe("https://api.anthropic.com/v1");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TestModelMappingApiLogs
+// ---------------------------------------------------------------------------
+
+describe("TestModelMappingApiLogs", () => {
+  beforeEach(() => {
+    mockChatCompletion.mockReset();
+    mockChatCompletion.mockResolvedValue(MOCK_CHAT_RESPONSE);
+    clearApiLogs();
+  });
+
+  it("test_chat_logs_upstream_model_for_mapped_alias", async () => {
+    const res = await request(app)
+      .post("/v1/chat/completions")
+      .set("Authorization", AUTH_HEADER)
+      .send({
+        model: "alias-gpt",
+        messages: [{ role: "user", content: "Hello" }],
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockChatCompletion).toHaveBeenCalledTimes(1);
+    expect(mockChatCompletion.mock.calls[0][0].model).toBe("gpt-4o");
+
+    const [log] = getApiLogs();
+    expect(log.path).toBe("/v1/chat/completions");
+    expect(log.model).toBe("alias-gpt");
+    expect(log.actualModel).toBe("gpt-4o");
+    expect(log.body.model).toBe("alias-gpt");
+  });
+
+  it("test_responses_logs_upstream_model_for_mapped_alias", async () => {
+    const res = await request(app)
+      .post("/v1/responses")
+      .set("Authorization", AUTH_HEADER)
+      .send({ model: "alias-gpt", input: "Hello" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.model).toBe("alias-gpt");
+    expect(mockChatCompletion).toHaveBeenCalledTimes(1);
+    expect(mockChatCompletion.mock.calls[0][0].model).toBe("gpt-4o");
+
+    const [log] = getApiLogs();
+    expect(log.path).toBe("/v1/responses");
+    expect(log.model).toBe("alias-gpt");
+    expect(log.actualModel).toBe("gpt-4o");
+    expect(log.body.model).toBe("alias-gpt");
+  });
+
+  it("test_messages_logs_upstream_model_for_mapped_alias", async () => {
+    const res = await request(app)
+      .post("/v1/messages")
+      .set("Authorization", AUTH_HEADER)
+      .send({
+        model: "alias-gpt",
+        messages: [{ role: "user", content: "Hello" }],
+        max_tokens: 100,
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.model).toBe("alias-gpt");
+    expect(mockChatCompletion).toHaveBeenCalledTimes(1);
+    expect(mockChatCompletion.mock.calls[0][0].model).toBe("gpt-4o");
+
+    const [log] = getApiLogs();
+    expect(log.path).toBe("/v1/messages");
+    expect(log.model).toBe("alias-gpt");
+    expect(log.actualModel).toBe("gpt-4o");
+    expect(log.body.model).toBe("alias-gpt");
   });
 });
 
