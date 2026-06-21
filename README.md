@@ -278,6 +278,32 @@ curl http://localhost:8000/v1/chat/completions \
 
 此功能在所有三個端點（`/v1/chat/completions`、`/v1/responses`、`/v1/messages`）和 Coding Mode fallback 中均生效，跨格式轉換時也會保留設定。
 
+**Thinking 內容輸出：**
+- Anthropic 的 thinking 內容會透過 `reasoning_content` 欄位輸出（與 OpenAI 的 `reasoning_content` 欄位相容）
+- 串流和非串流回應都支援
+- 範例（非串流）：
+  ```json
+  {
+    "choices": [{
+      "message": {
+        "role": "assistant",
+        "content": "這是模型的回答",
+        "reasoning_content": "這是模型的思考過程..."
+      }
+    }]
+  }
+  ```
+- 範例（串流）：
+  ```json
+  {
+    "choices": [{
+      "delta": {
+        "reasoning_content": "這是模型的思考過程..."
+      }
+    }]
+  }
+  ```
+
 ## 效能優化
 
 | 優化項目 | 說明 |
