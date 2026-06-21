@@ -2,6 +2,11 @@
 
 所有版本變更記錄。本檔案由 `npm run release` 自動維護。
 
+## [1.7.10] - 2026-06-21
+
+### 🐛 Bug Fixes
+- preserve thinking content in streaming and non-streaming responses (ad3d5d4)
+
 ## [1.7.9] - 2026-06-21
 
 - 維護更新
