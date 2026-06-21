@@ -201,11 +201,15 @@ def _to_openai_response(
 
     content_blocks = anthropic_resp.get("content", [])
     text_parts: list[str] = []
+    thinking_parts: list[str] = []
     for block in content_blocks:
         if block.get("type") == "text":
             text_parts.append(block.get("text", ""))
+        elif block.get("type") == "thinking":
+            thinking_parts.append(block.get("thinking", ""))
 
     text = "".join(text_parts)
+    reasoning_content = "".join(thinking_parts) if thinking_parts else None
 
     usage_in = anthropic_resp.get("usage", {})
     input_tokens = usage_in.get("input_tokens", 0)
@@ -213,6 +217,13 @@ def _to_openai_response(
 
     stop_reason = anthropic_resp.get("stop_reason", "end_turn")
     finish_reason = _map_stop_reason(stop_reason)
+
+    message: dict[str, Any] = {
+        "role": "assistant",
+        "content": text,
+    }
+    if reasoning_content is not None:
+        message["reasoning_content"] = reasoning_content
 
     return {
         "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
@@ -222,10 +233,7 @@ def _to_openai_response(
         "choices": [
             {
                 "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": text,
-                },
+                "message": message,
                 "finish_reason": finish_reason,
             }
         ],
@@ -326,11 +334,28 @@ async def _stream_response(
                 event_type = event.get("type", "")
 
                 if event_type == "content_block_delta":
-                    delta_text = event.get("delta", {}).get("text", "")
-                    chunk = _build_stream_chunk(
-                        completion_id, created, original_model, delta_text
-                    )
-                    yield f"data: {json.dumps(chunk)}\n\n".encode("utf-8")
+                    delta = event.get("delta", {})
+                    delta_type = delta.get("type", "")
+                    if delta_type == "thinking_delta":
+                        # Anthropic thinking content: delta.thinking
+                        thinking_text = delta.get("thinking", "")
+                        if thinking_text:
+                            chunk = _build_stream_chunk(
+                                completion_id, created, original_model, "",
+                                reasoning_content=thinking_text,
+                            )
+                            yield f"data: {json.dumps(chunk)}\n\n".encode("utf-8")
+                    elif delta_type == "signature_delta":
+                        # Signature is a security token, no need to forward
+                        pass
+                    else:
+                        # text_delta or other: delta.text
+                        delta_text = delta.get("text", "")
+                        if delta_text:
+                            chunk = _build_stream_chunk(
+                                completion_id, created, original_model, delta_text
+                            )
+                            yield f"data: {json.dumps(chunk)}\n\n".encode("utf-8")
 
                 elif event_type == "message_stop":
                     # Send final chunk with finish_reason
@@ -371,8 +396,15 @@ def _build_stream_chunk(
     text: str,
     finish_reason: str | None = None,
     usage: dict[str, Any] | None = None,
+    reasoning_content: str | None = None,
 ) -> dict[str, Any]:
     """Build a single OpenAI-format streaming chunk."""
+    delta: dict[str, Any] = {}
+    if text:
+        delta["content"] = text
+    if reasoning_content:
+        delta["reasoning_content"] = reasoning_content
+
     chunk: dict[str, Any] = {
         "id": completion_id,
         "object": "chat.completion.chunk",
@@ -381,13 +413,11 @@ def _build_stream_chunk(
         "choices": [
             {
                 "index": 0,
-                "delta": {},
+                "delta": delta,
                 "finish_reason": finish_reason,
             }
         ],
     }
-    if text:
-        chunk["choices"][0]["delta"]["content"] = text
     if usage:
         chunk["usage"] = {
             "prompt_tokens": usage.get("input_tokens", 0),

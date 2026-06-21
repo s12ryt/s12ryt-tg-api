@@ -264,10 +264,13 @@ function toOpenAIResponse(
 ): Record<string, any> {
   const contentBlocks: Array<Record<string, any>> = anthropicResp.content ?? [];
   const textParts: string[] = [];
+  const thinkingParts: string[] = [];
   for (const block of contentBlocks) {
     if (block.type === "text") textParts.push(block.text ?? "");
+    else if (block.type === "thinking") thinkingParts.push(block.thinking ?? "");
   }
   const text = textParts.join("");
+  const reasoningContent = thinkingParts.length > 0 ? thinkingParts.join("") : undefined;
 
   const usageIn = anthropicResp.usage ?? {};
   const inputTokens = usageIn.input_tokens ?? 0;
@@ -284,7 +287,11 @@ function toOpenAIResponse(
     choices: [
       {
         index: 0,
-        message: { role: "assistant", content: text },
+        message: {
+          role: "assistant",
+          content: text,
+          ...(reasoningContent ? { reasoning_content: reasoningContent } : {}),
+        },
         finish_reason: finishReason,
       },
     ],
@@ -555,9 +562,20 @@ async function* streamResponse(
         const eventType = event.type ?? "";
 
         if (eventType === "content_block_delta") {
-          const deltaText = event.delta?.text ?? "";
-          const chunk = buildStreamChunk(completionId, created, originalModel, deltaText);
-          yield encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`);
+          const deltaType = event.delta?.type ?? "";
+          if (deltaType === "thinking_delta") {
+            // Anthropic thinking content: delta.thinking (not delta.text)
+            const thinkingText = event.delta?.thinking ?? "";
+            if (thinkingText) {
+              const chunk = buildStreamChunk(completionId, created, originalModel, "", null, undefined, thinkingText);
+              yield encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`);
+            }
+          } else {
+            // text_delta or other — read delta.text as before
+            const deltaText = event.delta?.text ?? "";
+            const chunk = buildStreamChunk(completionId, created, originalModel, deltaText);
+            yield encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`);
+          }
         } else if (eventType === "message_stop") {
           const chunk = buildStreamChunk(
             completionId, created, originalModel, "", "stop"
@@ -607,8 +625,14 @@ function buildStreamChunk(
   model: string,
   text: string,
   finishReason: string | null = null,
-  usage?: Record<string, any>
+  usage?: Record<string, any>,
+  reasoningContent?: string
 ): Record<string, any> {
+  // Build delta object: content for text, reasoning_content for thinking
+  const delta: Record<string, any> = {};
+  if (text) delta.content = text;
+  if (reasoningContent) delta.reasoning_content = reasoningContent;
+
   const chunk: Record<string, any> = {
     id: completionId,
     object: "chat.completion.chunk",
@@ -617,7 +641,7 @@ function buildStreamChunk(
     choices: [
       {
         index: 0,
-        delta: text ? { content: text } : {},
+        delta,
         finish_reason: finishReason,
       },
     ],
