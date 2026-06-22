@@ -1,4 +1,4 @@
-"""
+﻿"""
 FastAPI application – API proxy / aggregation server.
 
 Accepts OpenAI-compatible requests and routes them to the correct provider.
@@ -418,7 +418,9 @@ async def _dispatch_with_fallback(
         for fb_model in fallback_models:
             try:
                 # Parse thinking suffix from fallback model name (e.g. "o3(high)")
-                fb_real_model, fb_level = parse_model_thinking_suffix(fb_model)
+                fb_parsed = parse_model_thinking_suffix(fb_model)
+                fb_real_model = fb_parsed["model"]
+                fb_level = fb_parsed.get("thinking_level")
                 # BUG-1 fix: enforce model access restrictions on fallback models
                 # (prevents bypassing whitelist/blacklist via coding-mode chain)
                 if not await _is_model_allowed_for_request(request, fb_real_model):
@@ -546,7 +548,13 @@ async def chat_completions(request: Request):
         )
 
     # Parse thinking level from model suffix or request params (e.g. "o3(high)")
-    preprocess_thinking(body)
+    try:
+        preprocess_thinking(body)
+    except ValueError as e:
+        return JSONResponse(
+            status_code=400,
+            content={"error": {"message": str(e), "type": "invalid_request_error"}},
+        )
 
     model_name = body.get("model", "")
     if not model_name:
@@ -663,7 +671,13 @@ async def responses_endpoint(request: Request):
         )
 
     # Parse thinking level from model suffix or request params (e.g. "o3(high)")
-    preprocess_thinking(body)
+    try:
+        preprocess_thinking(body)
+    except ValueError as e:
+        return JSONResponse(
+            status_code=400,
+            content={"error": {"message": str(e), "type": "invalid_request_error"}},
+        )
 
     model_name = body.get("model", "")
     if not model_name:
@@ -920,7 +934,13 @@ async def anthropic_messages_endpoint(request: Request):
         )
 
     # Parse thinking level from model suffix or request params (e.g. "o3(high)")
-    preprocess_thinking(body)
+    try:
+        preprocess_thinking(body)
+    except ValueError as e:
+        return JSONResponse(
+            status_code=400,
+            content={"type": "error", "error": {"type": "invalid_request_error", "message": str(e)}},
+        )
 
     # 2. Validate required fields
     model_name: str = body.get("model", "")

@@ -467,7 +467,8 @@ export async function* streamAnthropicApi(
       }
 
       // --- Reasoning/thinking delta ---
-      if (delta.reasoning != null && delta.reasoning !== "") {
+      const reasoningDelta: string | undefined = delta.reasoning ?? delta.reasoning_content;
+      if (reasoningDelta != null && reasoningDelta !== "") {
         // Ensure message_start has been emitted
         for (const b of ensureMessageStarted()) yield b;
 
@@ -489,11 +490,11 @@ export async function* streamAnthropicApi(
           }
         }
 
-        thinkingText += delta.reasoning;
+        thinkingText += reasoningDelta;
         yield sseLine("content_block_delta", {
           type: "content_block_delta",
           index: currentBlockIndex,
-          delta: { type: "thinking_delta", thinking: delta.reasoning },
+          delta: { type: "thinking_delta", thinking: reasoningDelta },
         });
       }
 

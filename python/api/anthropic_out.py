@@ -414,6 +414,8 @@ async def stream_anthropic_api(
 
             # --- Reasoning / thinking delta ---
             delta_reasoning = delta.get("reasoning")
+            if delta_reasoning is None:
+                delta_reasoning = delta.get("reasoning_content")
             if delta_reasoning is not None and delta_reasoning != "":
                 if not thinking_block_started:
                     thinking_block_started = True
