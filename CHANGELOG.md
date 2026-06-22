@@ -2,6 +2,11 @@
 
 所有版本變更記錄。本檔案由 `npm run release` 自動維護。
 
+## [1.7.15] - 2026-06-22
+
+### 🐛 Bug Fixes
+- non-streaming fallback now estimates input and output tokens independently (7eabc2d)
+
 ## [1.7.14] - 2026-06-22
 
 ### ✨ Features
