@@ -19,7 +19,14 @@ from .rate_limiter import RateLimitMiddleware, record_token_usage
 from .quota_checker import QuotaCheckMiddleware
 from . import providers as prov
 from .thinking_parser import preprocess_thinking, parse_model_thinking_suffix
-from .usage_tracker import extract_usage, calculate_cost, record_usage
+from .usage_tracker import (
+    extract_usage,
+    extract_usage_with_fallback,
+    calculate_cost,
+    record_usage,
+    estimate_tokens,
+    extract_input_text_from_body,
+)
 from config import Config
 from .responses import (
     convert_responses_input_to_messages,
@@ -142,11 +149,15 @@ async def _is_model_allowed_for_request(request: Request, model_name: str) -> bo
 # Streaming usage extraction helpers
 # ---------------------------------------------------------------------------
 
-def _extract_usage_from_sse_text(raw: str) -> tuple[int, int]:
-    """Parse SSE text and return (input_tokens, output_tokens) from any usage chunk."""
+def _extract_usage_from_sse_text(raw: str) -> tuple[int, int, str]:
+    """Parse SSE text and return (input_tokens, output_tokens, output_text).
+
+    Accumulates output text from streaming deltas for fallback estimation.
+    """
     import json as _json
     input_tokens = 0
     output_tokens = 0
+    output_text_parts: list[str] = []
     for line in raw.split("\n"):
         trimmed = line.strip()
         if not trimmed.startswith("data: "):
@@ -156,6 +167,7 @@ def _extract_usage_from_sse_text(raw: str) -> tuple[int, int]:
             continue
         try:
             parsed = _json.loads(payload)
+            # Extract usage data
             if "usage" in parsed:
                 u = parsed["usage"]
                 if u.get("prompt_tokens"):
@@ -166,9 +178,29 @@ def _extract_usage_from_sse_text(raw: str) -> tuple[int, int]:
                     input_tokens = u["input_tokens"]
                 if not output_tokens and u.get("output_tokens"):
                     output_tokens = u["output_tokens"]
+            # Accumulate output text from OpenAI-format deltas
+            choices = parsed.get("choices")
+            if isinstance(choices, list):
+                for choice in choices:
+                    if not isinstance(choice, dict):
+                        continue
+                    delta = choice.get("delta", {})
+                    if isinstance(delta, dict):
+                        for field in ("content", "reasoning_content", "reasoning"):
+                            text = delta.get(field)
+                            if isinstance(text, str) and text:
+                                output_text_parts.append(text)
+            # Accumulate output text from Anthropic-format deltas
+            if parsed.get("type") == "content_block_delta":
+                delta = parsed.get("delta", {})
+                if isinstance(delta, dict):
+                    for field in ("text", "thinking"):
+                        text = delta.get(field)
+                        if isinstance(text, str) and text:
+                            output_text_parts.append(text)
         except Exception:
             pass
-    return input_tokens, output_tokens
+    return input_tokens, output_tokens, "".join(output_text_parts)
 
 
 async def _stream_with_usage_raw(
@@ -180,16 +212,25 @@ async def _stream_with_usage_raw(
     input_price: float | None = None,
     output_price: float | None = None,
     is_coding_mode: bool = False,
+    input_text: str = "",
 ) -> AsyncIterator[bytes]:
     """Forward raw provider stream while extracting usage. Records usage when done."""
     total_in = 0
     total_out = 0
+    output_text = ""
     async for chunk in provider_stream:
         yield chunk
         raw = chunk.decode("utf-8") if isinstance(chunk, bytes) else str(chunk)
-        i, o = _extract_usage_from_sse_text(raw)
+        i, o, txt = _extract_usage_from_sse_text(raw)
         if i: total_in = i
         if o: total_out = o
+        if txt: output_text += txt
+
+    # Fallback estimation when provider didn't return usage
+    if not total_out and output_text:
+        total_out = estimate_tokens(output_text)
+    if not total_in and input_text:
+        total_in = estimate_tokens(input_text)
 
     # Record usage
     if total_in > 0 or total_out > 0:
@@ -233,6 +274,7 @@ async def _stream_with_usage_transform(
     input_price: float | None = None,
     output_price: float | None = None,
     is_coding_mode: bool = False,
+    input_text: str = "",
 ) -> AsyncIterator[bytes]:
     """Forward provider stream through a transform while extracting usage from raw chunks.
 
@@ -241,20 +283,28 @@ async def _stream_with_usage_transform(
     """
     total_in = 0
     total_out = 0
+    output_text = ""
 
     # Intercept raw chunks via a peekable wrapper
     async def _peek_source():
-        nonlocal total_in, total_out
+        nonlocal total_in, total_out, output_text
         async for chunk in provider_stream:
             raw = chunk.decode("utf-8") if isinstance(chunk, bytes) else str(chunk)
-            i, o = _extract_usage_from_sse_text(raw)
+            i, o, txt = _extract_usage_from_sse_text(raw)
             if i: total_in = i
             if o: total_out = o
+            if txt: output_text += txt
             yield chunk
 
     transformed = transform_fn(_peek_source())
     async for t_chunk in transformed:
         yield t_chunk
+
+    # Fallback estimation when provider didn't return usage
+    if not total_out and output_text:
+        total_out = estimate_tokens(output_text)
+    if not total_in and input_text:
+        total_in = estimate_tokens(input_text)
 
     # Record usage after all chunks are yielded
     if total_in > 0 or total_out > 0:
@@ -603,6 +653,7 @@ async def chat_completions(request: Request):
             input_price=input_price,
             output_price=output_price,
             is_coding_mode=is_coding,
+            input_text=extract_input_text_from_body(body),
         )
         return StreamingResponse(
             wrapped,
@@ -617,7 +668,7 @@ async def chat_completions(request: Request):
     # 5. Non-streaming: extract usage and record
     if isinstance(result, dict):
         try:
-            usage = extract_usage(provider_type, result)
+            usage = extract_usage_with_fallback(provider_type, result, body)
             cost = calculate_cost(input_price, output_price, usage["input_tokens"], usage["output_tokens"])
 
             user_id = getattr(request.state, "user_id", None)
@@ -741,6 +792,7 @@ async def responses_endpoint(request: Request):
                     input_price=_ip,
                     output_price=_op,
                     is_coding_mode=False,
+                    input_text=extract_input_text_from_body(body),
                 )
                 return StreamingResponse(
                     wrapped,
@@ -850,6 +902,7 @@ async def responses_endpoint(request: Request):
             input_price=input_price,
             output_price=output_price,
             is_coding_mode=is_coding,
+            input_text=extract_input_text_from_body(body),
         )
         return StreamingResponse(
             wrapped,
@@ -874,7 +927,7 @@ async def responses_endpoint(request: Request):
 
         # Extract usage and record
         try:
-            usage = extract_usage(provider_type, result)
+            usage = extract_usage_with_fallback(provider_type, result, body)
             cost = calculate_cost(input_price, output_price, usage["input_tokens"], usage["output_tokens"])
 
             user_id = getattr(request.state, "user_id", None)
@@ -1008,6 +1061,7 @@ async def anthropic_messages_endpoint(request: Request):
             input_price=input_price,
             output_price=output_price,
             is_coding_mode=is_coding,
+            input_text=extract_input_text_from_body(body),
         )
         return StreamingResponse(
             wrapped,
@@ -1025,7 +1079,7 @@ async def anthropic_messages_endpoint(request: Request):
 
         # Extract usage and record
         try:
-            usage = extract_usage(provider_type, result)
+            usage = extract_usage_with_fallback(provider_type, result, body)
             cost = calculate_cost(input_price, output_price, usage["input_tokens"], usage["output_tokens"])
 
             user_id = getattr(request.state, "user_id", None)

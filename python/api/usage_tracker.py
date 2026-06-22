@@ -7,6 +7,7 @@ Handles provider-specific usage extraction, cost calculation, and recording.
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,102 @@ def extract_usage(
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
     }
+
+
+# ---------------------------------------------------------------------------
+# Token estimation fallback (when providers don't return usage data)
+# ---------------------------------------------------------------------------
+
+def estimate_tokens(text: str) -> int:
+    """Estimate token count from text.
+
+    Uses a simple heuristic:
+    - CJK characters: ~1.2 tokens per character
+    - Latin/ASCII characters: ~0.25 tokens per character (≈4 chars/token)
+    """
+    if not text:
+        return 0
+
+    cjk_count = 0
+    other_count = 0
+    for ch in text:
+        code = ord(ch)
+        # CJK Unified Ideographs + common CJK ranges
+        if (
+            0x4E00 <= code <= 0x9FFF        # CJK Unified Ideographs
+            or 0x3400 <= code <= 0x4DBF     # CJK Extension A
+            or 0x3040 <= code <= 0x30FF     # Hiragana + Katakana
+            or 0xAC00 <= code <= 0xD7AF     # Hangul Syllables
+            or 0xFF00 <= code <= 0xFFEF     # Fullwidth Forms
+        ):
+            cjk_count += 1
+        else:
+            other_count += 1
+
+    return max(1, math.ceil(cjk_count * 1.2 + other_count * 0.25))
+
+
+def extract_input_text_from_body(body: dict[str, Any]) -> str:
+    """Extract concatenated input text from a request body (Chat Completions format).
+
+    Handles both string content and multimodal content arrays.
+    """
+    parts: list[str] = []
+    messages = body.get("messages", [])
+    if not isinstance(messages, list):
+        return ""
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if isinstance(content, str):
+            parts.append(content)
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    parts.append(block.get("text", ""))
+                elif isinstance(block, str):
+                    parts.append(block)
+    return " ".join(parts)
+
+
+def extract_output_text_from_response(response_data: dict[str, Any]) -> str:
+    """Extract concatenated output text from a response (OpenAI format)."""
+    parts: list[str] = []
+    choices = response_data.get("choices", [])
+    if isinstance(choices, list):
+        for choice in choices:
+            if not isinstance(choice, dict):
+                continue
+            message = choice.get("message", {})
+            if isinstance(message, dict):
+                content = message.get("content")
+                if isinstance(content, str) and content:
+                    parts.append(content)
+                reasoning = message.get("reasoning_content")
+                if isinstance(reasoning, str) and reasoning:
+                    parts.append(reasoning)
+    return " ".join(parts)
+
+
+def extract_usage_with_fallback(
+    provider_type: str,
+    response_data: dict[str, Any],
+    body: dict[str, Any] | None = None,
+) -> dict[str, int]:
+    """Extract usage; if no usage data, estimate from request/response text."""
+    usage = extract_usage(provider_type, response_data)
+
+    if usage["input_tokens"] == 0 and usage["output_tokens"] == 0:
+        output_text = extract_output_text_from_response(response_data)
+        if output_text:
+            usage["output_tokens"] = estimate_tokens(output_text)
+        if body:
+            input_text = extract_input_text_from_body(body)
+            if input_text:
+                usage["input_tokens"] = estimate_tokens(input_text)
+
+    return usage
 
 
 # ---------------------------------------------------------------------------

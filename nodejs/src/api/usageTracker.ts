@@ -60,6 +60,105 @@ export function extractUsage(
   return { input_tokens: inputTokens, output_tokens: outputTokens };
 }
 
+/**
+ * Extract usage from a provider response, falling back to text-based estimation
+ * when the provider did not return any usage data (input_tokens and output_tokens both 0).
+ *
+ * @param body  The original request body (used to extract input text for estimation).
+ */
+export function extractUsageWithFallback(
+  providerType: string,
+  responseData: Record<string, any>,
+  body?: Record<string, any>,
+): Usage {
+  const usage = extractUsage(providerType, responseData);
+  if (usage.input_tokens > 0 || usage.output_tokens > 0) return usage;
+
+  // Provider returned no usage — estimate from text
+  const inputText = body ? extractInputTextFromBody(body) : "";
+  const outputText = extractOutputTextFromResponse(responseData);
+  return {
+    input_tokens: estimateTokens(inputText),
+    output_tokens: estimateTokens(outputText),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Token estimation (CJK-aware heuristic, zero dependencies)
+// ---------------------------------------------------------------------------
+
+/**
+ * Roughly estimate token count from text.
+ *
+ * Uses a CJK-aware heuristic: CJK characters (including Hiragana, Katakana,
+ * and Hangul) are counted at ~1.2 tokens each; all other characters at ~0.25
+ * tokens each (4 chars per token).  This is accurate enough for cost tracking
+ * when the upstream provider does not return usage data.
+ */
+export function estimateTokens(text: string | null | undefined): number {
+  if (!text) return 0;
+  let cjk = 0;
+  let other = 0;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (
+      (code >= 0x4e00 && code <= 0x9fff) || // CJK Unified Ideographs
+      (code >= 0x3400 && code <= 0x4dbf) || // CJK Extension A
+      (code >= 0xf900 && code <= 0xfaff) || // CJK Compatibility Ideographs
+      (code >= 0x3040 && code <= 0x309f) || // Hiragana
+      (code >= 0x30a0 && code <= 0x30ff) || // Katakana
+      (code >= 0xac00 && code <= 0xd7af)   // Hangul Syllables
+    ) {
+      cjk++;
+    } else {
+      other++;
+    }
+  }
+  return Math.ceil(cjk * 1.2 + other / 4);
+}
+
+/**
+ * Extract input text from a Chat Completions request body (messages[].content).
+ * Handles both string content and multimodal array content (text parts only).
+ */
+export function extractInputTextFromBody(body: Record<string, any> | undefined): string {
+  if (!body) return "";
+  const messages = body.messages;
+  if (!Array.isArray(messages)) return "";
+  const parts: string[] = [];
+  for (const msg of messages) {
+    if (!msg) continue;
+    const content = msg.content;
+    if (typeof content === "string") {
+      parts.push(content);
+    } else if (Array.isArray(content)) {
+      for (const part of content) {
+        if (part?.type === "text" && typeof part.text === "string") {
+          parts.push(part.text);
+        }
+      }
+    }
+  }
+  return parts.join(" ");
+}
+
+/**
+ * Extract output text from a non-streaming Chat Completions response.
+ * Includes both content and reasoning_content.
+ */
+export function extractOutputTextFromResponse(responseData: Record<string, any>): string {
+  const choices = responseData.choices;
+  if (!Array.isArray(choices)) return "";
+  const parts: string[] = [];
+  for (const choice of choices) {
+    const msg = choice?.message;
+    if (!msg) continue;
+    if (typeof msg.content === "string") parts.push(msg.content);
+    if (typeof msg.reasoning_content === "string") parts.push(msg.reasoning_content);
+  }
+  return parts.join(" ");
+}
+
 // ---------------------------------------------------------------------------
 // Cost calculation
 // ---------------------------------------------------------------------------

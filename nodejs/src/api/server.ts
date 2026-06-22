@@ -16,7 +16,7 @@ import * as openaiProvider from "./providers/openai.js";
 import * as openaiResponseProvider from "./providers/openaiResponse.js";
 import * as anthropicProvider from "./providers/anthropic.js";
 import * as googleProvider from "./providers/google.js";
-import { extractUsage, calculateCost, recordUsage } from "./usageTracker.js";
+import { extractUsage, extractUsageWithFallback, calculateCost, recordUsage, estimateTokens, extractInputTextFromBody } from "./usageTracker.js";
 import {
   convertResponsesInputToMessages,
   convertChatCompletionToResponses,
@@ -114,6 +114,8 @@ async function recordUsageAndCost(
   outPrice: number | null,
   isCodingMode: boolean = false,
 ): Promise<void> {
+  // Note: tokens may be estimated (non-zero) even when the provider returned no usage.
+  // Skip only when there is genuinely nothing to record.
   if (inTokens <= 0 && outTokens <= 0) return;
   try {
     const cost = calculateCost(inPrice, outPrice, inTokens, outTokens);
@@ -378,11 +380,13 @@ function isModelAllowedForRequest(
 async function forwardStreamAndExtractUsage(
   stream: AsyncIterable<Uint8Array>,
   write: (chunk: Uint8Array) => void,
+  inputText?: string,
 ): Promise<{ input_tokens: number; output_tokens: number }> {
   const decoder = new TextDecoder();
   let inputTokens = 0;
   let outputTokens = 0;
   let sseBuffer = "";
+  let outputText = "";
 
   for await (const chunk of stream) {
     write(chunk);
@@ -403,6 +407,10 @@ async function forwardStreamAndExtractUsage(
     extractUsageFromSSE(line.trim());
   }
 
+  // Fallback: estimate tokens from accumulated text when provider returns no usage
+  if (!outputTokens && outputText) outputTokens = estimateTokens(outputText);
+  if (!inputTokens && inputText) inputTokens = estimateTokens(inputText);
+
   return { input_tokens: inputTokens, output_tokens: outputTokens };
 
   /** Parse a single SSE data line and update token counters in closure. */
@@ -422,6 +430,23 @@ async function forwardStreamAndExtractUsage(
         if (!inputTokens && usage.input_tokens) inputTokens = usage.input_tokens;
         if (!outputTokens && usage.output_tokens) outputTokens = usage.output_tokens;
       }
+      // Accumulate output text for fallback estimation
+      const choices = parsed.choices;
+      if (Array.isArray(choices)) {
+        for (const choice of choices) {
+          const delta = choice.delta ?? choice.message;
+          if (delta) {
+            if (typeof delta.content === "string") outputText += delta.content;
+            if (typeof delta.reasoning_content === "string") outputText += delta.reasoning_content;
+            if (typeof delta.reasoning === "string") outputText += delta.reasoning;
+          }
+        }
+      }
+      // Anthropic content_block_delta format
+      if (parsed.type === "content_block_delta" && parsed.delta) {
+        if (typeof parsed.delta.text === "string") outputText += parsed.delta.text;
+        if (typeof parsed.delta.thinking === "string") outputText += parsed.delta.thinking;
+      }
     } catch { /* not JSON – skip */ }
   }
 }
@@ -435,11 +460,13 @@ async function forwardStreamAndExtractUsage(
 async function extractUsageFromProviderStream(
   providerStream: AsyncIterable<Uint8Array>,
   transformAndWrite: (providerStream: AsyncIterable<Uint8Array>) => Promise<void>,
+  inputText?: string,
 ): Promise<{ input_tokens: number; output_tokens: number }> {
   const decoder = new TextDecoder();
   let inputTokens = 0;
   let outputTokens = 0;
   let sseBuffer = "";
+  let outputText = "";
   let decoderFlushed = false;
   let streamDone = false;
   let cancelled = false;
@@ -476,6 +503,23 @@ async function extractUsageFromProviderStream(
         if (usage.completion_tokens) outputTokens = usage.completion_tokens;
         if (!inputTokens && usage.input_tokens) inputTokens = usage.input_tokens;
         if (!outputTokens && usage.output_tokens) outputTokens = usage.output_tokens;
+      }
+      // Accumulate output text for fallback estimation
+      const choices = parsed.choices;
+      if (Array.isArray(choices)) {
+        for (const choice of choices) {
+          const delta = choice?.delta;
+          if (delta) {
+            if (typeof delta.content === "string") outputText += delta.content;
+            if (typeof delta.reasoning_content === "string") outputText += delta.reasoning_content;
+            if (typeof delta.reasoning === "string") outputText += delta.reasoning;
+          }
+        }
+      }
+      // Anthropic SSE format
+      if (parsed.type === "content_block_delta" && parsed.delta) {
+        if (typeof parsed.delta.text === "string") outputText += parsed.delta.text;
+        if (typeof parsed.delta.thinking === "string") outputText += parsed.delta.thinking;
       }
     } catch { /* skip */ }
   }
@@ -530,6 +574,10 @@ async function extractUsageFromProviderStream(
     }
     flushDecoder();
   }
+
+  // Fallback: estimate tokens from accumulated text when provider returned no usage
+  if (!outputTokens && outputText) outputTokens = estimateTokens(outputText);
+  if (!inputTokens && inputText) inputTokens = estimateTokens(inputText);
 
   return { input_tokens: inputTokens, output_tokens: outputTokens };
 }
@@ -645,6 +693,7 @@ app.post(
           const streamUsage = await forwardStreamAndExtractUsage(
             result as AsyncIterable<Uint8Array>,
             (chunk) => { chunkCount++; writeAndFlush(res, chunk); },
+            extractInputTextFromBody(body),
           );
 
           // Record streaming usage
@@ -686,7 +735,7 @@ app.post(
       // Non-streaming: extract usage and record
       if (result && typeof result === "object") {
         try {
-          const usage = extractUsage(providerType, result);
+          const usage = extractUsageWithFallback(providerType, result, body);
           await recordUsageAndCost(req.auth, providerId, actualModel,
             usage.input_tokens, usage.output_tokens, inputPrice, outputPrice, isCodingMode);
           addApiLog({
@@ -796,6 +845,7 @@ app.post(
                 const streamUsage = await forwardStreamAndExtractUsage(
                   result as AsyncIterable<Uint8Array>,
                   (chunk) => { writeAndFlush(res, chunk); },
+                  extractInputTextFromBody(body),
                 );
                 await recordUsageAndCost(
                   req.auth, String(_resolved.providerId), modelName,
@@ -990,6 +1040,7 @@ app.post(
                 writeAndFlush(res, chunk);
               }
             },
+            extractInputTextFromBody(body),
           );
 
           // Record streaming usage
@@ -1039,7 +1090,7 @@ app.post(
 
         // Extract usage and record
         try {
-          const usage = extractUsage(providerType, result2);
+          const usage = extractUsageWithFallback(providerType, result2, body);
           await recordUsageAndCost(req.auth, String(providerId), actualModel, usage.input_tokens, usage.output_tokens, inputPrice, outputPrice, isCodingModeResp);
           addApiLog({
             timestamp: new Date().toISOString(),
@@ -1153,6 +1204,7 @@ app.post(
                 const streamUsage = await forwardStreamAndExtractUsage(
                   result as AsyncIterable<Uint8Array>,
                   (chunk) => { writeAndFlush(res, chunk); },
+                  extractInputTextFromBody(body),
                 );
                 await recordUsageAndCost(
                   req.auth, String(_resolved.providerId), modelName,
@@ -1307,6 +1359,7 @@ app.post(
                 writeAndFlush(res, chunk);
               }
             },
+            extractInputTextFromBody(body),
           );
 
           await recordUsageAndCost(req.auth, String(providerId), actualModel, streamUsage.input_tokens, streamUsage.output_tokens, inputPrice, outputPrice, isCodingModeMsg);
@@ -1348,7 +1401,7 @@ app.post(
         const anthropicResult = convertChatCompletionToAnthropic(result, actualModel);
 
         try {
-          const usage = extractUsage(providerType, result);
+          const usage = extractUsageWithFallback(providerType, result, body);
           await recordUsageAndCost(req.auth, String(providerId), actualModel, usage.input_tokens, usage.output_tokens, inputPrice, outputPrice, isCodingModeMsg);
           addApiLog({
             timestamp: new Date().toISOString(),
