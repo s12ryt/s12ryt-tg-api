@@ -886,9 +886,9 @@ app.post(
             }
 
             if (result && typeof result === "object") {
-              const _u = (result as any).usage ?? {};
-              const _inT: number = _u.input_tokens ?? 0;
-              const _outT: number = _u.output_tokens ?? 0;
+              const _usage = extractUsageWithFallback("openai_response", result as Record<string, any>, body);
+              const _inT = _usage.input_tokens;
+              const _outT = _usage.output_tokens;
               await recordUsageAndCost(
                 req.auth, String(_resolved.providerId), modelName,
                 _inT, _outT,
@@ -1245,9 +1245,9 @@ app.post(
             }
 
             if (result && typeof result === "object") {
-              const _u = (result as any).usage ?? {};
-              const _inT: number = _u.input_tokens ?? 0;
-              const _outT: number = _u.output_tokens ?? 0;
+              const _usage = extractUsageWithFallback("anthropic", result as Record<string, any>, body);
+              const _inT = _usage.input_tokens;
+              const _outT = _usage.output_tokens;
               await recordUsageAndCost(
                 req.auth, String(_resolved.providerId), modelName,
                 _inT, _outT,

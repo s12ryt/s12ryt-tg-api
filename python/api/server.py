@@ -805,9 +805,9 @@ async def responses_endpoint(request: Request):
                 )
 
             if isinstance(result, dict):
-                _u = result.get("usage", {})
-                _in_t = _u.get("input_tokens", 0)
-                _out_t = _u.get("output_tokens", 0)
+                _usage = extract_usage_with_fallback("openai_response", result, body)
+                _in_t = _usage["input_tokens"]
+                _out_t = _usage["output_tokens"]
                 try:
                     if _in_t > 0 or _out_t > 0:
                         cost = calculate_cost(_ip, _op, _in_t, _out_t)

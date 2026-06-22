@@ -77,33 +77,69 @@ def estimate_tokens(text: str) -> int:
 
 
 def extract_input_text_from_body(body: dict[str, Any]) -> str:
-    """Extract concatenated input text from a request body (Chat Completions format).
+    """Extract concatenated input text from a request body.
 
-    Handles both string content and multimodal content arrays.
+    Supports three API formats:
+    - Chat Completions: body.messages[].content (string or multimodal array)
+    - Responses API: body.input (string or array of {role, content})
+    - Responses API: body.instructions (system prompt string)
     """
     parts: list[str] = []
-    messages = body.get("messages", [])
-    if not isinstance(messages, list):
-        return ""
-    for msg in messages:
-        if not isinstance(msg, dict):
-            continue
-        content = msg.get("content")
-        if isinstance(content, str):
-            parts.append(content)
-        elif isinstance(content, list):
-            for block in content:
-                if isinstance(block, dict) and block.get("type") == "text":
-                    parts.append(block.get("text", ""))
-                elif isinstance(block, str):
-                    parts.append(block)
+
+    # Chat Completions format: messages[].content
+    messages = body.get("messages")
+    if isinstance(messages, list):
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            content = msg.get("content")
+            if isinstance(content, str):
+                parts.append(content)
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        parts.append(block.get("text", ""))
+                    elif isinstance(block, str):
+                        parts.append(block)
+
+    # Responses API format: input as string or array of {role, content}
+    input_data = body.get("input")
+    if isinstance(input_data, str):
+        parts.append(input_data)
+    elif isinstance(input_data, list):
+        for item in input_data:
+            if not isinstance(item, dict):
+                continue
+            content = item.get("content")
+            if isinstance(content, str):
+                parts.append(content)
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, str):
+                        parts.append(block)
+                    elif isinstance(block, dict):
+                        if block.get("type") in ("text", "input_text"):
+                            parts.append(block.get("text", ""))
+
+    # Responses API format: instructions (system prompt)
+    instructions = body.get("instructions")
+    if isinstance(instructions, str):
+        parts.append(instructions)
+
     return " ".join(parts)
 
 
 def extract_output_text_from_response(response_data: dict[str, Any]) -> str:
-    """Extract concatenated output text from a response (OpenAI format)."""
+    """Extract concatenated output text from a response.
+
+    Supports two API response formats:
+    - Chat Completions: choices[].message.content + reasoning_content
+    - Responses API: output[].content[] (with type output_text/text)
+    """
     parts: list[str] = []
-    choices = response_data.get("choices", [])
+
+    # Chat Completions format: choices[].message.content + reasoning_content
+    choices = response_data.get("choices")
     if isinstance(choices, list):
         for choice in choices:
             if not isinstance(choice, dict):
@@ -116,6 +152,26 @@ def extract_output_text_from_response(response_data: dict[str, Any]) -> str:
                 reasoning = message.get("reasoning_content")
                 if isinstance(reasoning, str) and reasoning:
                     parts.append(reasoning)
+
+    # Responses API format: output[].content[]
+    output_items = response_data.get("output")
+    if isinstance(output_items, list):
+        for item in output_items:
+            if not isinstance(item, dict):
+                continue
+            content = item.get("content")
+            if isinstance(content, str):
+                parts.append(content)
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, str):
+                        parts.append(block)
+                    elif isinstance(block, dict):
+                        text = block.get("text")
+                        if isinstance(text, str) and text:
+                            # type can be "output_text", "text", etc.
+                            parts.append(text)
+
     return " ".join(parts)
 
 

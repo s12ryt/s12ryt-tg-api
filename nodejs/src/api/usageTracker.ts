@@ -121,44 +121,108 @@ export function estimateTokens(text: string | null | undefined): number {
 }
 
 /**
- * Extract input text from a Chat Completions request body (messages[].content).
- * Handles both string content and multimodal array content (text parts only).
+ * Extract input text from a request body.
+ *
+ * Supports three API formats:
+ * - Chat Completions: body.messages[].content (string or multimodal array)
+ * - Responses API: body.input (string or array of {role, content})
+ * - Responses API: body.instructions (system prompt string)
  */
 export function extractInputTextFromBody(body: Record<string, any> | undefined): string {
   if (!body) return "";
-  const messages = body.messages;
-  if (!Array.isArray(messages)) return "";
   const parts: string[] = [];
-  for (const msg of messages) {
-    if (!msg) continue;
-    const content = msg.content;
-    if (typeof content === "string") {
-      parts.push(content);
-    } else if (Array.isArray(content)) {
-      for (const part of content) {
-        if (part?.type === "text" && typeof part.text === "string") {
-          parts.push(part.text);
+
+  // Chat Completions format: messages[].content
+  const messages = body.messages;
+  if (Array.isArray(messages)) {
+    for (const msg of messages) {
+      if (!msg) continue;
+      const content = msg.content;
+      if (typeof content === "string") {
+        parts.push(content);
+      } else if (Array.isArray(content)) {
+        for (const part of content) {
+          if (part?.type === "text" && typeof part.text === "string") {
+            parts.push(part.text);
+          }
         }
       }
     }
   }
+
+  // Responses API format: input as string
+  const input = body.input;
+  if (typeof input === "string") {
+    parts.push(input);
+  } else if (Array.isArray(input)) {
+    // Responses API format: input as array of {role, content}
+    for (const item of input) {
+      if (!item) continue;
+      const content = item.content;
+      if (typeof content === "string") {
+        parts.push(content);
+      } else if (Array.isArray(content)) {
+        for (const part of content) {
+          if (typeof part === "string") {
+            parts.push(part);
+          } else if (part?.type === "text" || part?.type === "input_text") {
+            if (typeof part.text === "string") parts.push(part.text);
+          }
+        }
+      }
+    }
+  }
+
+  // Responses API format: instructions (system prompt)
+  if (typeof body.instructions === "string") {
+    parts.push(body.instructions);
+  }
+
   return parts.join(" ");
 }
 
 /**
- * Extract output text from a non-streaming Chat Completions response.
- * Includes both content and reasoning_content.
+ * Extract output text from a non-streaming response.
+ *
+ * Supports two API response formats:
+ * - Chat Completions: choices[].message.content + reasoning_content
+ * - Responses API: output[].content[] (with type output_text/text)
  */
 export function extractOutputTextFromResponse(responseData: Record<string, any>): string {
-  const choices = responseData.choices;
-  if (!Array.isArray(choices)) return "";
   const parts: string[] = [];
-  for (const choice of choices) {
-    const msg = choice?.message;
-    if (!msg) continue;
-    if (typeof msg.content === "string") parts.push(msg.content);
-    if (typeof msg.reasoning_content === "string") parts.push(msg.reasoning_content);
+
+  // Chat Completions format: choices[].message.content + reasoning_content
+  const choices = responseData.choices;
+  if (Array.isArray(choices)) {
+    for (const choice of choices) {
+      const msg = choice?.message;
+      if (!msg) continue;
+      if (typeof msg.content === "string") parts.push(msg.content);
+      if (typeof msg.reasoning_content === "string") parts.push(msg.reasoning_content);
+    }
   }
+
+  // Responses API format: output[].content[]
+  const outputItems = responseData.output;
+  if (Array.isArray(outputItems)) {
+    for (const item of outputItems) {
+      if (!item) continue;
+      const content = item.content;
+      if (typeof content === "string") {
+        parts.push(content);
+      } else if (Array.isArray(content)) {
+        for (const part of content) {
+          if (typeof part === "string") {
+            parts.push(part);
+          } else if (part && typeof part.text === "string") {
+            // type can be "output_text", "text", etc.
+            parts.push(part.text);
+          }
+        }
+      }
+    }
+  }
+
   return parts.join(" ");
 }
 
