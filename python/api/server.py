@@ -557,7 +557,7 @@ async def list_models(request: Request):
         allowed = await get_allowed_models(user_id, api_key_id, all_model_names, is_admin)
         allowed_set = set(allowed)
     else:
-        allowed_set = set(all_model_names)  # No auth → show all
+        allowed_set = set()  # No auth → return empty (defense-in-depth, matches Node.js)
 
     models: list[dict[str, Any]] = []
 
