@@ -54,9 +54,10 @@ def _isolate_db_path(tmp_path, monkeypatch):
     """Override Config.DATABASE_PATH to use a temp file for every test."""
     db_file = str(tmp_path / "test.db")
     monkeypatch.setattr(database.Config, "DATABASE_PATH", db_file)
-    # Clear the global usage queue so stale entries from prior tests
-    # don't cause silent FK violations when flushed into this test's DB.
+    # Clear module-level caches so stale entries from prior tests
+    # don't bleed into this test's fresh database.
     database._usage_queue.clear()
+    database._effective_limits_cache.clear()
     return db_file
 
 

@@ -38,19 +38,21 @@ class QuotaCheckMiddleware(BaseHTTPMiddleware):
         if not user_id or not api_key_id:
             return await call_next(request)
 
-        # Admin bypasses all quotas
-        from db.database import get_user_by_id
-        user = await get_user_by_id(user_id)
-        if user and user["tg_user_id"] == Config.ADMIN_ID:
+        # Admin bypasses all quotas (no DB query needed — tg_user_id cached in middleware)
+        tg_user_id = getattr(request.state, "tg_user_id", None)
+        if tg_user_id is not None and tg_user_id == Config.ADMIN_ID:
             return await call_next(request)
 
         from db.database import get_effective_limits, get_daily_usage, get_monthly_usage
 
-        try:
-            limits = await get_effective_limits(user_id, api_key_id)
-        except Exception:
-            logger.exception("[quota_checker] Failed to get effective limits")
-            return await call_next(request)
+        # Reuse effective_limits from rate_limiter if available (avoids duplicate DB query)
+        limits = getattr(request.state, "effective_limits", None)
+        if limits is None:
+            try:
+                limits = await get_effective_limits(user_id, api_key_id)
+            except Exception:
+                logger.exception("[quota_checker] Failed to get effective limits")
+                return await call_next(request)
 
         # Only query usage when relevant limits are set (> 0 means limited)
         need_daily = limits["daily_token_limit"] > 0 or limits["daily_cost_limit"] > 0

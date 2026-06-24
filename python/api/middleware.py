@@ -85,6 +85,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # Attach user info to request state for downstream handlers.
         request.state.user_id = key_info["user_id"]
         request.state.api_key_id = key_info["api_key_id"]
+        request.state.tg_user_id = key_info.get("tg_user_id")
 
         return await call_next(request)
 

@@ -143,10 +143,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if not user_id or not api_key_id:
             return await call_next(request)
 
-        # Admin bypasses all rate limits
-        from db.database import get_user_by_id
-        user = await get_user_by_id(user_id)
-        if user and user["tg_user_id"] == Config.ADMIN_ID:
+        # Admin bypasses all rate limits (no DB query needed — tg_user_id cached in middleware)
+        tg_user_id = getattr(request.state, "tg_user_id", None)
+        if tg_user_id is not None and tg_user_id == Config.ADMIN_ID:
             return await call_next(request)
 
         # Get effective limits
@@ -156,6 +155,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         except Exception:
             logger.exception("[rate_limiter] Failed to get effective limits")
             return await call_next(request)
+
+        # Share limits with quota_checker to avoid duplicate DB query
+        request.state.effective_limits = limits
 
         # --- Check expiry ---
         if limits.get("expires_at"):

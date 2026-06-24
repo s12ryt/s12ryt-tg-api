@@ -14,6 +14,7 @@ Selection strategy:
 
 import json
 import time
+import random
 import threading
 from typing import Optional
 
@@ -27,6 +28,7 @@ SUSPEND_DURATION_SECONDS = 60  # 60 seconds
 # { provider_id: { key_index: (fail_count, suspended_until_timestamp) } }
 _lock = threading.Lock()
 _state: dict[int, dict[int, tuple[int, float]]] = {}
+_round_robin_index: dict[int, int] = {}
 
 
 # ── Public API ─────────────────────────────────────────────────
@@ -52,51 +54,72 @@ def parse_api_keys(api_key_json: str) -> list[str]:
     return [key] if key else []
 
 
-def select_key(provider_id: int, api_key_json: str) -> tuple[Optional[str], Optional[int]]:
+def select_key(
+    provider_id: int, api_key_json: str, strategy: str = "failover"
+) -> tuple[Optional[str], Optional[int]]:
     """Select the best available API key for a provider.
-    
+
+    Args:
+        provider_id: Provider ID for state tracking
+        api_key_json: JSON array string of keys (or legacy single key)
+        strategy: Selection strategy — 'failover' (first available),
+                  'round_robin' (rotate cursor), 'random' (random pick)
+
     Returns:
         (selected_key, key_index) or (None, None) if no keys available
     """
     keys = parse_api_keys(api_key_json)
     if not keys:
         return None, None
-    
+
     now = time.time()
-    
+    num_keys = len(keys)
+
     with _lock:
         provider_state = _state.get(provider_id, {})
-        
-        # Try each key in order, skip suspended ones
-        for idx, key in enumerate(keys):
+
+        # Build iteration order based on strategy
+        if strategy == "round_robin":
+            cursor = _round_robin_index.get(provider_id, 0)
+            order = [(cursor + i) % num_keys for i in range(num_keys)]
+            _round_robin_index[provider_id] = (cursor + 1) % num_keys
+        elif strategy == "random":
+            order = list(range(num_keys))
+            random.shuffle(order)
+        else:  # failover (default)
+            order = list(range(num_keys))
+
+        # Try keys in determined order, skip suspended ones
+        for idx in order:
+            key = keys[idx]
             fail_count, suspended_until = provider_state.get(idx, (0, 0.0))
-            
+
             # Check if suspension has expired
             if suspended_until > 0 and now >= suspended_until:
                 # Auto-recover: reset fail count
                 provider_state[idx] = (0, 0.0)
                 _state[provider_id] = provider_state
                 return key, idx
-            
+
             # Not suspended
             if suspended_until <= 0:
                 return key, idx
-        
+
         # All keys suspended — use the one that recovers soonest
         soonest_idx = None
-        soonest_time = float('inf')
-        for idx in range(len(keys)):
+        soonest_time = float("inf")
+        for idx in range(num_keys):
             _, suspended_until = provider_state.get(idx, (0, 0.0))
             if suspended_until < soonest_time:
                 soonest_time = suspended_until
                 soonest_idx = idx
-        
+
         if soonest_idx is not None:
             # Force recover the soonest one
             provider_state[soonest_idx] = (0, 0.0)
             _state[provider_id] = provider_state
             return keys[soonest_idx], soonest_idx
-        
+
         # Fallback: return first key
         return keys[0], 0
 
@@ -154,6 +177,17 @@ def get_key_status(provider_id: int, api_key_json: str) -> list[dict]:
             })
         
         return result
+
+
+def clear_provider_key_state(provider_id: int) -> None:
+    """Remove all in-memory state for a provider.
+
+    Called when a provider is deleted to prevent orphaned entries in
+    _state and _round_robin_index from accumulating (memory leak).
+    """
+    with _lock:
+        _state.pop(provider_id, None)
+        _round_robin_index.pop(provider_id, None)
 
 
 def get_first_key(api_key_json: str) -> str:

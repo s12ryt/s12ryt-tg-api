@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS providers (
     base_url TEXT NOT NULL,
     api_key TEXT NOT NULL,
     models TEXT DEFAULT '',
+    key_strategy TEXT DEFAULT 'failover' CHECK(key_strategy IN ('failover', 'round_robin', 'random')),
     enabled INTEGER DEFAULT 1,
     input_price REAL DEFAULT 0,
     output_price REAL DEFAULT 0,

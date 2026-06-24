@@ -135,12 +135,10 @@ async def _is_model_allowed_for_request(request: Request, model_name: str) -> bo
     if model_name == "coding-mode":
         return True
 
-    # Look up user to determine admin status
-    from db.database import get_user_by_id, check_model_allowed
-    user = await get_user_by_id(user_id)
-    if not user:
-        return False
-    is_admin = (user["tg_user_id"] == Config.ADMIN_ID)
+    # Determine admin status from cached tg_user_id (no DB query needed)
+    from db.database import check_model_allowed
+    tg_user_id = getattr(request.state, "tg_user_id", None)
+    is_admin = tg_user_id is not None and tg_user_id == Config.ADMIN_ID
 
     return await check_model_allowed(user_id, api_key_id, model_name, is_admin)
 
@@ -371,7 +369,9 @@ async def _lookup_model_db(model_name: str) -> tuple[str, str, dict[str, Any], f
         output_price = model_price.get("output_price") if model_price else cached.output_price
 
         # Select a single key from multi-key JSON array
-        selected_key, key_index = select_key(cached.provider_id, cached.api_key)
+        selected_key, key_index = select_key(
+            cached.provider_id, cached.api_key, getattr(cached, "key_strategy", "failover")
+        )
 
         return (
             cached.provider_type,
@@ -395,7 +395,7 @@ async def _lookup_model_db(model_name: str) -> tuple[str, str, dict[str, Any], f
                 output_price = p.get("output_price")
 
             # Select a single key from multi-key JSON array
-            selected_key, key_index = select_key(p["id"], p["api_key"])
+            selected_key, key_index = select_key(p["id"], p["api_key"], p.get("key_strategy", "failover"))
 
             return (
                 p["api_type"],
@@ -551,9 +551,9 @@ async def list_models(request: Request):
     api_key_id = getattr(request.state, "api_key_id", None)
 
     if user_id and api_key_id:
-        # Determine admin status
-        user = await get_user_by_id(user_id)
-        is_admin = bool(user and user["tg_user_id"] == Config.ADMIN_ID)
+        # Determine admin status from cached tg_user_id (no DB query needed)
+        tg_user_id = getattr(request.state, "tg_user_id", None)
+        is_admin = tg_user_id is not None and tg_user_id == Config.ADMIN_ID
         allowed = await get_allowed_models(user_id, api_key_id, all_model_names, is_admin)
         allowed_set = set(allowed)
     else:

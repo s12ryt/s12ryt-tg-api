@@ -64,6 +64,7 @@ class CachedProvider:
     api_key: str
     input_price: Optional[float]
     output_price: Optional[float]
+    key_strategy: str = "failover"
 
 
 # model_name -> CachedProvider
@@ -95,6 +96,7 @@ async def rebuild_provider_cache() -> None:
                 api_key=p["api_key"],
                 input_price=p.get("input_price"),
                 output_price=p.get("output_price"),
+                key_strategy=p.get("key_strategy", "failover"),
             )
 
     _provider_cache = cache
@@ -166,6 +168,7 @@ async def lookup_api_key_cached(key: str) -> Optional[dict]:
     result = {
         "user_id": key_record["user_id"],
         "api_key_id": key_record["id"],
+        "tg_user_id": user["tg_user_id"],
     }
     _api_key_cache.put(key, result)
     return result
@@ -307,6 +310,12 @@ async def init_db() -> None:
                 await db.execute(f"ALTER TABLE coding_configs ADD COLUMN {col_def}")
             except aiosqlite.OperationalError:
                 pass  # Column already exists
+
+        # Migration: add key_strategy column to providers
+        try:
+            await db.execute("ALTER TABLE providers ADD COLUMN key_strategy TEXT DEFAULT 'failover'")
+        except aiosqlite.OperationalError:
+            pass
 
         # Migration: openai → openai_chat (split api_type)
         async with db.execute(
@@ -509,6 +518,8 @@ async def delete_provider(provider_id: int) -> bool:
     async with await get_connection() as db:
         cursor = await db.execute("DELETE FROM providers WHERE id = ?", (provider_id,))
         await db.commit()
+        from api.key_selector import clear_provider_key_state
+        clear_provider_key_state(provider_id)
         invalidate_provider_cache()
         return cursor.rowcount > 0
 
@@ -1309,6 +1320,7 @@ async def add_user_group(
             await db.commit()
         except aiosqlite.IntegrityError:
             return None
+    invalidate_effective_limits_cache()
     return await get_user_group_by_name(name)
 
 
@@ -1329,6 +1341,7 @@ async def update_user_group(group_id: int, **kwargs) -> dict | None:
     async with await get_connection() as db:
         await db.execute(f"UPDATE user_groups SET {set_clause} WHERE id = ?", values)
         await db.commit()
+    invalidate_effective_limits_cache()
     return await get_user_group_by_id(group_id)
 
 
@@ -1352,6 +1365,7 @@ async def delete_user_group(group_id: int) -> None:
         async with await get_connection() as db:
             await db.execute("DELETE FROM user_groups WHERE id = ?", (group_id,))
             await db.commit()
+    invalidate_effective_limits_cache()
 
 
 # ============================================================
@@ -1374,6 +1388,7 @@ async def set_user_group(user_id: int, group_id: int) -> None:
             "UPDATE users SET group_id = ? WHERE id = ?", (group_id, user_id)
         )
         await db.commit()
+    invalidate_effective_limits_cache(user_id)
 
 
 async def set_user_overrides(
@@ -1412,6 +1427,7 @@ async def set_user_overrides(
             f"UPDATE users SET {', '.join(fields)} WHERE id = ?", values
         )
         await db.commit()
+    invalidate_effective_limits_cache(user_id)
 
 
 async def get_api_key_with_limits(api_key_id: int) -> dict | None:
@@ -1458,6 +1474,7 @@ async def set_api_key_overrides(
             f"UPDATE api_keys SET {', '.join(fields)} WHERE id = ?", values
         )
         await db.commit()
+    invalidate_effective_limits_cache()
 
 
 # ============================================================
@@ -1480,11 +1497,17 @@ def _pick_limit(
     return 0  # unlimited
 
 
-async def get_effective_limits(
+# --- TTL cache for get_effective_limits (mirrors Node.js effectiveLimitsCache) ---
+_EFFECTIVE_LIMITS_TTL = 60  # seconds
+_EFFECTIVE_LIMITS_CACHE_MAX = 512
+_effective_limits_cache: dict[tuple[int, int | None], tuple[float, dict]] = {}
+
+
+async def _compute_effective_limits(
     user_id: int,
     api_key_id: int | None = None,
 ) -> dict:
-    """Calculate effective limits for a given user + API key.
+    """Compute effective limits for a given user + API key (uncached).
 
     Priority: apiKey override > user override > user group limit > 0 (unlimited).
 
@@ -1546,6 +1569,55 @@ async def get_effective_limits(
             or None
         ),
     }
+
+
+async def get_effective_limits(
+    user_id: int,
+    api_key_id: int | None = None,
+) -> dict:
+    """Get effective limits with 60s TTL cache (mirrors Node.js getCachedEffectiveLimits).
+
+    Use invalidate_effective_limits_cache() when limits are modified.
+    """
+    key = (user_id, api_key_id)
+    now = time.monotonic()
+
+    # Check cache
+    cached = _effective_limits_cache.get(key)
+    if cached is not None:
+        ts, limits = cached
+        if now - ts < _EFFECTIVE_LIMITS_TTL:
+            # LRU re-insertion on hit
+            del _effective_limits_cache[key]
+            _effective_limits_cache[key] = (now, limits)
+            return limits
+        else:
+            del _effective_limits_cache[key]
+
+    # Cache miss — compute
+    limits = await _compute_effective_limits(user_id, api_key_id)
+
+    # Evict oldest if at capacity
+    while len(_effective_limits_cache) >= _EFFECTIVE_LIMITS_CACHE_MAX:
+        oldest_key = next(iter(_effective_limits_cache))
+        del _effective_limits_cache[oldest_key]
+
+    _effective_limits_cache[key] = (now, limits)
+    return limits
+
+
+def invalidate_effective_limits_cache(user_id: int | None = None) -> None:
+    """Invalidate the effective limits cache.
+
+    If user_id is provided, only invalidates entries for that user.
+    Otherwise clears the entire cache.
+    """
+    if user_id is None:
+        _effective_limits_cache.clear()
+    else:
+        keys_to_delete = [k for k in _effective_limits_cache if k[0] == user_id]
+        for k in keys_to_delete:
+            del _effective_limits_cache[k]
 
 
 # ============================================================
