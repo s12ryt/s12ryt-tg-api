@@ -2,6 +2,23 @@
 
 所有版本變更記錄。本檔案由 `npm run release` 自動維護。
 
+## [1.7.17] - 2026-06-24
+
+### ✨ Features
+- accurate token counting via tiktoken/count_tokens API with heuristic fallback (504c5f2)
+- accurate token counting via tiktoken/count_tokens API with heuristic fallback (74491c6)
+
+### 🐛 Bug Fixes
+- accept provider-compatible auth keys (5b40c45)
+- preserve converted response metadata (543db50)
+- align Python perf optimizations and key strategies with Node.js (#2 #3 #4 #5) (5f6f145)
+
+### 📝 Documentation
+- document API auth compatibility (b15dac1)
+
+### 📦 Other
+- security: return empty model list for unauthenticated /v1/models (Python defense-in-depth) (bff3919)
+
 ## [1.7.16] - 2026-06-22
 
 ### 🐛 Bug Fixes
