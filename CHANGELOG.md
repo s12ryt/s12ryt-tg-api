@@ -2,6 +2,12 @@
 
 所有版本變更記錄。本檔案由 `npm run release` 自動維護。
 
+## [1.8.0] - 2026-06-24
+
+### 🐛 Bug Fixes
+- prevalidate backups before restore (5b65dc2)
+- reduce blue-green update disk usage (58c923a)
+
 ## [1.7.17] - 2026-06-24
 
 ### ✨ Features
