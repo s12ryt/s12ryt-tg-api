@@ -10,7 +10,18 @@ import logging
 import math
 from typing import Any
 
+import httpx
+
+try:
+    import tiktoken
+    _HAS_TIKTOKEN = True
+except ImportError:
+    _HAS_TIKTOKEN = False
+
 logger = logging.getLogger(__name__)
+
+# Provider configuration for accurate token counting
+ProviderConfig = dict[str, str]
 
 # ---------------------------------------------------------------------------
 # Usage extraction
@@ -175,23 +186,130 @@ def extract_output_text_from_response(response_data: dict[str, Any]) -> str:
     return " ".join(parts)
 
 
-def extract_usage_with_fallback(
+# ---------------------------------------------------------------------------
+# Accurate token counting (tiktoken / count_tokens API)
+# ---------------------------------------------------------------------------
+
+def _get_openai_encoding(model_name: str):
+    """Get tiktoken encoding for an OpenAI model, with fallback to cl100k_base."""
+    if not _HAS_TIKTOKEN:
+        raise ImportError("tiktoken not installed")
+    try:
+        return tiktoken.encoding_for_model(model_name)
+    except KeyError:
+        return tiktoken.get_encoding("cl100k_base")
+
+
+def count_tokens_openai(text: str, model_name: str | None = None) -> int:
+    """Count tokens using tiktoken (OpenAI BPE tokenizer)."""
+    if not text or not _HAS_TIKTOKEN:
+        return 0
+    encoding = _get_openai_encoding(model_name or "gpt-4o")
+    return len(encoding.encode(text))
+
+
+async def count_tokens_anthropic(
+    text: str,
+    provider_config: ProviderConfig,
+    model_name: str | None = None,
+) -> int:
+    """Count tokens via Anthropic count_tokens API."""
+    if not text:
+        return 0
+    base_url = provider_config.get("base_url", "").rstrip("/")
+    api_key = provider_config.get("api_key", "")
+    if not base_url or not api_key:
+        return 0
+    model = model_name or "claude-sonnet-4-20250514"
+    url = f"{base_url}/v1/messages/count_tokens"
+    headers = {
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
+    body = {
+        "model": model,
+        "max_tokens": 1,
+        "messages": [{"role": "user", "content": text}],
+    }
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.post(url, json=body, headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("input_tokens", 0)
+
+
+async def count_tokens_google(
+    text: str,
+    provider_config: ProviderConfig,
+    model_name: str | None = None,
+) -> int:
+    """Count tokens via Google countTokens API."""
+    if not text:
+        return 0
+    base_url = provider_config.get("base_url", "").rstrip("/")
+    api_key = provider_config.get("api_key", "")
+    if not base_url or not api_key:
+        return 0
+    model = model_name or "gemini-2.0-flash"
+    url = f"{base_url}/v1beta/models/{model}:countTokens?key={api_key}"
+    body = {"contents": [{"parts": [{"text": text}]}]}
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.post(url, json=body)
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("totalTokens", 0)
+
+
+async def count_tokens_accurate(
+    provider_type: str,
+    text: str,
+    provider_config: ProviderConfig | None = None,
+    model_name: str | None = None,
+) -> int:
+    """Dispatch to provider-specific accurate token counter.
+
+    Returns 0 on any error (caller should fall back to estimate_tokens).
+    """
+    if not text:
+        return 0
+    try:
+        if provider_type in ("openai", "openai_chat", "openai_response"):
+            return count_tokens_openai(text, model_name)
+        elif provider_type == "anthropic":
+            if not provider_config:
+                return 0
+            return await count_tokens_anthropic(text, provider_config, model_name)
+        elif provider_type == "google":
+            if not provider_config:
+                return 0
+            return await count_tokens_google(text, provider_config, model_name)
+    except Exception:
+        logger.debug("Accurate token counting failed, falling back to heuristic")
+    return 0
+
+
+async def extract_usage_with_fallback(
     provider_type: str,
     response_data: dict[str, Any],
     body: dict[str, Any] | None = None,
+    provider_config: ProviderConfig | None = None,
+    model_name: str | None = None,
 ) -> dict[str, int]:
-    """Extract usage; if no usage data, estimate from request/response text."""
+    """Extract usage; if no usage data, count accurately or estimate."""
     usage = extract_usage(provider_type, response_data)
 
-    # Estimate input/output independently — some providers return only one of the two
+    # Count input/output independently — some providers return only one of the two
     if usage["input_tokens"] == 0 and body:
         input_text = extract_input_text_from_body(body)
         if input_text:
-            usage["input_tokens"] = estimate_tokens(input_text)
+            count = await count_tokens_accurate(provider_type, input_text, provider_config, model_name)
+            usage["input_tokens"] = count if count else estimate_tokens(input_text)
     if usage["output_tokens"] == 0:
         output_text = extract_output_text_from_response(response_data)
         if output_text:
-            usage["output_tokens"] = estimate_tokens(output_text)
+            count = await count_tokens_accurate(provider_type, output_text, provider_config, model_name)
+            usage["output_tokens"] = count if count else estimate_tokens(output_text)
 
     return usage
 

@@ -26,6 +26,7 @@ from .usage_tracker import (
     record_usage,
     estimate_tokens,
     extract_input_text_from_body,
+    count_tokens_accurate,
 )
 from config import Config
 from .responses import (
@@ -213,6 +214,7 @@ async def _stream_with_usage_raw(
     output_price: float | None = None,
     is_coding_mode: bool = False,
     input_text: str = "",
+    provider_config: dict[str, Any] | None = None,
 ) -> AsyncIterator[bytes]:
     """Forward raw provider stream while extracting usage. Records usage when done."""
     total_in = 0
@@ -228,9 +230,13 @@ async def _stream_with_usage_raw(
 
     # Fallback estimation when provider didn't return usage
     if not total_out and output_text:
-        total_out = estimate_tokens(output_text)
+        total_out = await count_tokens_accurate(provider_type, output_text, provider_config, model_name)
+        if not total_out:
+            total_out = estimate_tokens(output_text)
     if not total_in and input_text:
-        total_in = estimate_tokens(input_text)
+        total_in = await count_tokens_accurate(provider_type, input_text, provider_config, model_name)
+        if not total_in:
+            total_in = estimate_tokens(input_text)
 
     # Record usage
     if total_in > 0 or total_out > 0:
@@ -275,6 +281,7 @@ async def _stream_with_usage_transform(
     output_price: float | None = None,
     is_coding_mode: bool = False,
     input_text: str = "",
+    provider_config: dict[str, Any] | None = None,
 ) -> AsyncIterator[bytes]:
     """Forward provider stream through a transform while extracting usage from raw chunks.
 
@@ -302,9 +309,13 @@ async def _stream_with_usage_transform(
 
     # Fallback estimation when provider didn't return usage
     if not total_out and output_text:
-        total_out = estimate_tokens(output_text)
+        total_out = await count_tokens_accurate(provider_type, output_text, provider_config, model_name)
+        if not total_out:
+            total_out = estimate_tokens(output_text)
     if not total_in and input_text:
-        total_in = estimate_tokens(input_text)
+        total_in = await count_tokens_accurate(provider_type, input_text, provider_config, model_name)
+        if not total_in:
+            total_in = estimate_tokens(input_text)
 
     # Record usage after all chunks are yielded
     if total_in > 0 or total_out > 0:
@@ -654,6 +665,7 @@ async def chat_completions(request: Request):
             output_price=output_price,
             is_coding_mode=is_coding,
             input_text=extract_input_text_from_body(body),
+            provider_config=provider_config,
         )
         return StreamingResponse(
             wrapped,
@@ -668,7 +680,7 @@ async def chat_completions(request: Request):
     # 5. Non-streaming: extract usage and record
     if isinstance(result, dict):
         try:
-            usage = extract_usage_with_fallback(provider_type, result, body)
+            usage = await extract_usage_with_fallback(provider_type, result, body, provider_config, model_name)
             cost = calculate_cost(input_price, output_price, usage["input_tokens"], usage["output_tokens"])
 
             user_id = getattr(request.state, "user_id", None)
@@ -793,6 +805,7 @@ async def responses_endpoint(request: Request):
                     output_price=_op,
                     is_coding_mode=False,
                     input_text=extract_input_text_from_body(body),
+                    provider_config=_pcfg,
                 )
                 return StreamingResponse(
                     wrapped,
@@ -805,7 +818,7 @@ async def responses_endpoint(request: Request):
                 )
 
             if isinstance(result, dict):
-                _usage = extract_usage_with_fallback("openai_response", result, body)
+                _usage = await extract_usage_with_fallback("openai_response", result, body, _pcfg, model_name)
                 _in_t = _usage["input_tokens"]
                 _out_t = _usage["output_tokens"]
                 try:
@@ -903,6 +916,7 @@ async def responses_endpoint(request: Request):
             output_price=output_price,
             is_coding_mode=is_coding,
             input_text=extract_input_text_from_body(body),
+            provider_config=provider_config,
         )
         return StreamingResponse(
             wrapped,
@@ -927,7 +941,7 @@ async def responses_endpoint(request: Request):
 
         # Extract usage and record
         try:
-            usage = extract_usage_with_fallback(provider_type, result, body)
+            usage = await extract_usage_with_fallback(provider_type, result, body, provider_config, model_name)
             cost = calculate_cost(input_price, output_price, usage["input_tokens"], usage["output_tokens"])
 
             user_id = getattr(request.state, "user_id", None)
@@ -1062,6 +1076,7 @@ async def anthropic_messages_endpoint(request: Request):
             output_price=output_price,
             is_coding_mode=is_coding,
             input_text=extract_input_text_from_body(body),
+            provider_config=provider_config,
         )
         return StreamingResponse(
             wrapped,
@@ -1079,7 +1094,7 @@ async def anthropic_messages_endpoint(request: Request):
 
         # Extract usage and record
         try:
-            usage = extract_usage_with_fallback(provider_type, result, body)
+            usage = await extract_usage_with_fallback(provider_type, result, body, provider_config, model_name)
             cost = calculate_cost(input_price, output_price, usage["input_tokens"], usage["output_tokens"])
 
             user_id = getattr(request.state, "user_id", None)
