@@ -2230,6 +2230,71 @@ function assertNoForeignKeyViolations(d: SqlJsDatabase): void {
   throw new Error(`Invalid backup: foreign key violations detected: ${samples.join(", ")}${suffix}`);
 }
 
+function createRestoreShadowDb(): SqlJsDatabase {
+  const DatabaseCtor = getDb().constructor as unknown as { new (): SqlJsDatabase };
+  const shadow = new DatabaseCtor();
+  createTables(shadow);
+  return shadow;
+}
+
+function validateBackupAgainstSchema(data: BackupData): void {
+  const shadow = createRestoreShadowDb();
+  try {
+    shadow.exec("PRAGMA foreign_keys = OFF");
+    shadow.exec("BEGIN");
+
+    for (const table of BACKUP_TABLES) {
+      shadow.exec(`DELETE FROM ${table}`);
+      try {
+        shadow.exec(`DELETE FROM sqlite_sequence WHERE name = '${table}'`);
+      } catch {
+        // sqlite_sequence may not exist yet — ignore
+      }
+    }
+
+    for (const table of BACKUP_TABLES) {
+      const rows = (data.tables as Record<string, unknown>)[table];
+      if (!Array.isArray(rows) || rows.length === 0) continue;
+
+      const columns = getTableColumns(table);
+      if (columns.length === 0) continue;
+
+      for (const row of rows) {
+        if (typeof row !== "object" || row === null) continue;
+        const rowRecord = row as Record<string, unknown>;
+        const presentCols = columns.filter((c) => c in rowRecord);
+        if (presentCols.length === 0) continue;
+        const colList = presentCols.map((c) => `"${c}"`).join(", ");
+        const placeholders = presentCols.map(() => "?").join(", ");
+        const sql = `INSERT INTO ${table} (${colList}) VALUES (${placeholders})`;
+        const values: SqlValue[] = presentCols.map((c) => toSqlValue(rowRecord[c]));
+        shadow.run(sql, values);
+      }
+    }
+
+    assertNoForeignKeyViolations(shadow);
+    shadow.exec("ROLLBACK");
+  } catch (err) {
+    try {
+      shadow.exec("ROLLBACK");
+    } catch {
+      // Ignore rollback errors
+    }
+    throw err;
+  } finally {
+    try {
+      shadow.exec("PRAGMA foreign_keys = ON");
+    } catch {
+      // Ignore
+    }
+    try {
+      shadow.close();
+    } catch {
+      // Ignore
+    }
+  }
+}
+
 /**
  * Import (restore) a backup, overwriting all existing data.
  *
@@ -2246,6 +2311,9 @@ export function importDatabase(data: BackupData): void {
 
   // Flush pending writes before overwriting
   flushUsageQueue();
+
+  // Preflight: validate backup on a shadow DB before touching the live database.
+  validateBackupAgainstSchema(data);
 
   const d = getDb();
 
