@@ -1,6 +1,7 @@
 {
   "name": "s12ryt-tg-api",
-  "version": "1.8.0",
+  "version": "1.8.1",
+  "license": "AGPL-3.0-or-later",
   "type": "module",
   "engines": {
     "node": ">=22"

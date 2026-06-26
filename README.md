@@ -36,7 +36,7 @@
 - **API 日誌**（僅 Node.js）— 記憶體中保留最近 50 筆 API 請求日誌（環形緩衝區，不持久化），可用於除錯與監控
 - **指令統合設計** — 選單式多輪對話，少量指令完成所有操作
 - **模型抓取** — `/model_catch` 指令可抓取任意 API 的模型列表
-- **內置更新系統** — `/update` 指令直接從 GitHub Release 更新程式（git pull + tarball 備援）
+- **內置更新系統** — `/update` 指令直接從 GitHub Release 更新程式（Blue-Green、git pull + tarball 備援、低空間預檢）
 - **Cloudflare Tunnel**（僅 Node.js）— 內置隧道支援，一鍵暴露本地服務到公網（`quick` 臨時 URL / `token` 命名隧道）
 
 ### 效能
@@ -49,7 +49,7 @@
 - **雙語言實作** — Python (FastAPI + python-telegram-bot) 與 Node.js (Express + grammY)
 - **完整測試** — 530 個單元 + 整合測試全部通過（Node.js 316 + Python 214）
 - **CI/CD** — GitHub Actions 自動發布 Release（push to main 更新 `latest`，tag v*.*.* 建立 stable）
-- **低資源容器優化**（僅 Node.js）— 自動偵測可用記憶體，動態調整 V8 heap size（50% 記憶體，[128, 512]MB 區間）、npm 並發連接數（maxsockets=2）和操作超時倍率（≤512MB→3x、≤1024MB→2x），適配 256MB 等低配 VPS / 容器
+- **低資源容器優化**（僅 Node.js）— 自動偵測可用記憶體，動態調整 V8 heap size、npm 並發與超時；更新流程加入磁碟/inode 預檢、舊暫存清理、devDependencies prune，適配低配 VPS / 容器
 
 ## 架構
 
@@ -100,7 +100,7 @@
 | `/api_test` | 測試 API 協議連通性（偵測 openai_chat / openai_response / anthropic / google，顯示信心等級 + 推薦） |
 | `/limits` | 權限管理選單：用戶分組 CRUD / 用戶限制設定 / API Key 限制設定（RPM/TPM/並發/日月配額/期限） |
 | `/version` | 查看當前程式版本（commit hash + tag + 日期） |
-| `/update` | 檢查 GitHub Release 更新並一鍵更新（git pull + tarball 備援） |
+| `/update` | 檢查 GitHub Release 更新並一鍵更新（Blue-Green；git pull + tarball 備援；低空間預檢） |
 | `/restart` | 重啟進程 |
 
 ## Web 控制台（僅 Node.js）
@@ -162,6 +162,21 @@ npm install
 cp .env.example .env   # 編輯 .env 填入你的設定值
 npm run dev
 ```
+
+## 更新與備份還原（Node.js）
+
+### 內置更新低空間策略
+
+- `/update` 使用 Blue-Green 流程：下載到 `.staging`、安裝/編譯/驗證後再原子切換，舊版移到 `.backup-*` 供回滾。
+- 更新前會刪除舊 `.staging`、清理過舊 `.backup-*`（至少保留最新 1 份）、檢查可用磁碟空間與 inode；不足會提前中止並提示清理。
+- staging 不部署/備份 `tests`，也不覆蓋 `data/`、`.env`、`node_modules/`、`.git`；build 後執行 `npm prune --omit=dev --no-audit --no-fund` 以降低 `node_modules` 與備份大小。
+- 2GB VPS 建議仍預留約 `2.0~2.5x` 的 `nodejs/` 目錄大小；遇到 ENOSPC 可在 `nodejs/` 內執行 `rm -rf .staging .backup-* && npm cache clean --force`，並用 `df -h` / `df -i` 檢查。
+
+### 備份還原安全
+
+- `/backup` 匯出的 JSON 會包含 `providers`、`users`、`api_keys`、`usage`、`settings`、`model_prices` 等資料表。
+- 還原前會先在 shadow DB 以相同 schema 匯入並執行 `PRAGMA foreign_key_check`；備份有孤兒外鍵時會先失敗，不會清空目前正式資料庫。
+- `Invalid backup: foreign key violations detected: model_prices.* -> providers` 代表備份內 `model_prices.provider_id` 找不到對應 `providers.id`；請先修復備份或重新匯出乾淨備份。
 
 ## 環境變數
 
@@ -334,7 +349,7 @@ curl http://localhost:8000/v1/chat/completions \
 | **DB 複合索引** | usage / api_keys / users 表新增 4 個複合索引，查詢 O(n) → O(log n) |
 | **有效限制快取** | `getEffectiveLimits` 合併為單次 LEFT JOIN（原 3 次 SELECT）+ 60s TTL 快取 + 6 處失效點，每請求 DB 查詢從 ~10 降至 0-2 |
 | **中間件共享結果** | rateLimiter → quotaChecker 透過 `res.locals` / context 共享已查詢結果，避免重複查詢 |
-| **低資源容器適配**（僅 Node.js）| 啟動時偵測記憶體動態設定 V8 heap 上限 + npm 並發限制 + 超時倍率；更新流程改用流式下載（`pipeline`）避免 OOM；API 日誌截斷長請求體；DB 寫入去掉 Buffer 拷貝 |
+| **低資源容器適配**（僅 Node.js）| 啟動時偵測記憶體動態設定 V8 heap 上限 + npm 並發限制 + 超時倍率；更新流程改用流式下載（`pipeline`）避免 OOM，並加入磁碟/inode 預檢、舊暫存/備份清理、跳過 `tests`、build 後 prune devDependencies；API 日誌截斷長請求體；DB 寫入去掉 Buffer 拷貝 |
 
 ## 支援的供應商
 
@@ -477,4 +492,14 @@ s12ryt-tg-api/
 
 ## License
 
-MIT
+本專案採用 **GNU Affero General Public License v3.0 (AGPL-3.0)** 授權。
+
+Copyright (C) 2026 s12ryt
+
+這是一個 copyleft 授權，特別針對網路服務軟體設計：
+
+- 你可以自由使用、修改、散布本程式。
+- **若你修改本程式並透過網路提供服務（例如架設成 API / SaaS）**，依 AGPL-3.0 第 13 條，你必須向使用該服務的使用者**公開你修改後的完整原始碼**。
+- 任何衍生作品都必須以相同的 AGPL-3.0 授權釋出，不得閉源。
+
+完整條款請見專案根目錄的 [`LICENSE`](./LICENSE) 檔案，或參閱 <https://www.gnu.org/licenses/agpl-3.0.html>。

@@ -286,7 +286,9 @@ function main(): void {
   const commits = getCommitsSinceTag(lastTag);
   const sections = categorizeCommits(commits);
   const changelogBody = generateChangelogSection(sections);
-  const today = new Date().toISOString().split("T")[0];
+  // 使用本地時區日期（非 UTC）。toISOString() 取的是 UTC 日期，
+  // 在台灣（UTC+8）00:00~08:00 發版時會早一天；sv-SE locale 產生本地時區的 YYYY-MM-DD。
+  const today = new Date().toLocaleDateString("sv-SE");
 
   console.log(`   📝 掃描到 ${commits.length} 條 commit：`);
   if (sections.breaking.length) console.log(`      💥 Breaking: ${sections.breaking.length}`);
