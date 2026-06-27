@@ -24,7 +24,9 @@ import { join } from "node:path";
 import os from "node:os";
 import { pipeline } from "node:stream/promises";
 import { closeDb } from "./db/database.js";
+import { getConfiguredMemoryMB } from "./memory.js";
 import { fetchWithRetry, fetchGithub, applyMirror, diagnoseConnectivity } from "./net.js";
+export { parseMemoryLimitMB, getConfiguredMemoryMB } from "./memory.js";
 export { diagnoseConnectivity } from "./net.js";
 export type { ConnectivityReport } from "./net.js";
 
@@ -107,11 +109,11 @@ function getTotalMemMB(): number {
  *   - 512MB 容器 → 256MB
  *   - 1GB+       → 512MB（上限，避免無謂分配）
  *
- * 用戶可通過 MAX_OLD_SPACE 環境變數覆蓋。
+ * 用戶可通過 memory（優先）或 MAX_OLD_SPACE（相容舊設定）環境變數覆蓋。
  */
 function getOptimalHeapSize(): number {
-  const override = parseInt(process.env.MAX_OLD_SPACE ?? "", 10);
-  if (!isNaN(override) && override >= 64) return override;
+  const configured = getConfiguredMemoryMB();
+  if (configured !== null) return configured;
 
   const totalMB = getTotalMemMB();
   const calculated = Math.floor(totalMB * 0.5);

@@ -42,6 +42,8 @@ import {
   evaluateDiskSpace,
   isNoSpaceError,
   shouldStageItem,
+  parseMemoryLimitMB,
+  getConfiguredMemoryMB,
 } from "../src/updater.js";
 
 // ===========================================================================
@@ -279,6 +281,32 @@ describe("evaluateDiskSpace", () => {
     expect(result.ok).toBe(false);
     expect(result.message).toContain("inode 不足");
     expect(result.message).toContain("df -h / df -i");
+  });
+});
+
+// ===========================================================================
+// Memory limit parsing
+// ===========================================================================
+
+describe("memory limit parsing", () => {
+  it("accepts integer and one-decimal MB values", () => {
+    expect(parseMemoryLimitMB("256")).toBe(256);
+    expect(parseMemoryLimitMB("256.5")).toBe(256);
+    expect(parseMemoryLimitMB(" 512.0 ")).toBe(512);
+  });
+
+  it("rejects invalid, too small, and overly precise values", () => {
+    expect(parseMemoryLimitMB(undefined)).toBeNull();
+    expect(parseMemoryLimitMB("63.9")).toBeNull();
+    expect(parseMemoryLimitMB("128.55")).toBeNull();
+    expect(parseMemoryLimitMB("128mb")).toBeNull();
+    expect(parseMemoryLimitMB("-128")).toBeNull();
+  });
+
+  it("prefers memory over MAX_OLD_SPACE", () => {
+    expect(getConfiguredMemoryMB({ memory: "300.5", MAX_OLD_SPACE: "512" })).toBe(300);
+    expect(getConfiguredMemoryMB({ MAX_OLD_SPACE: "512" })).toBe(512);
+    expect(getConfiguredMemoryMB({ memory: "bad", MAX_OLD_SPACE: "512" })).toBe(512);
   });
 });
 
