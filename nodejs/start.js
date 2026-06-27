@@ -17,7 +17,7 @@
  *   SKIP_INSTALL=1 → 跳過自動 npm install
  */
 
-import { existsSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import { spawn } from "child_process";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -38,24 +38,70 @@ function getTotalMemMB() {
   return Math.floor(os.totalmem() / 1024 / 1024);
 }
 
+function readDotEnvValue(key) {
+  const envPath = path.join(appDir, ".env");
+  if (!existsSync(envPath)) return undefined;
+
+  try {
+    const lines = readFileSync(envPath, "utf8").split(/\r?\n/);
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+
+      const eqIndex = trimmed.indexOf("=");
+      if (eqIndex <= 0) continue;
+
+      const name = trimmed.slice(0, eqIndex).trim();
+      if (name !== key) continue;
+
+      const value = trimmed.slice(eqIndex + 1).trim();
+      return value.replace(/^['"]|['"]$/g, "");
+    }
+  } catch {
+    return undefined;
+  }
+
+  return undefined;
+}
+
+function parseMemoryLimitMB(value) {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!/^\d+(?:\.\d)?$/.test(trimmed)) return null;
+
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed) || parsed < 64) return null;
+
+  return Math.floor(parsed);
+}
+
+function getConfiguredMemoryMB() {
+  return parseMemoryLimitMB(process.env.memory) ??
+    parseMemoryLimitMB(readDotEnvValue("memory")) ??
+    parseMemoryLimitMB(process.env.MAX_OLD_SPACE) ??
+    parseMemoryLimitMB(readDotEnvValue("MAX_OLD_SPACE"));
+}
+
 function getOptimalHeapSize() {
-  const override = parseInt(process.env.MAX_OLD_SPACE ?? "", 10);
-  if (!isNaN(override) && override >= 64) return override;
+  const configured = getConfiguredMemoryMB();
+  if (configured !== null) return configured;
   const totalMB = getTotalMemMB();
   // 取總記憶體 50%，限制在 [128, 512]MB
   return Math.max(128, Math.min(512, Math.floor(totalMB * 0.5)));
+}
+
+function withMaxOldSpaceSize(nodeOptions, memoryMB) {
+  const withoutOldSpace = (nodeOptions ?? "")
+    .replace(/(?:^|\s)--max-old-space-size=\S+/g, " ")
+    .trim();
+  return [withoutOldSpace, `--max-old-space-size=${memoryMB}`].filter(Boolean).join(" ");
 }
 
 const OPTIMAL_HEAP = getOptimalHeapSize();
 
 // 設定全域 NODE_OPTIONS — 讓所有子進程（node / npx / npm）自動繼承 V8 heap 限制。
 // 這樣 spawnInherit 不傳 env 時（如 node dist/index.js），子進程也會帶上 heap flag。
-process.env.NODE_OPTIONS = [
-  process.env.NODE_OPTIONS,
-  `--max-old-space-size=${OPTIMAL_HEAP}`,
-]
-  .filter(Boolean)
-  .join(" ");
+process.env.NODE_OPTIONS = withMaxOldSpaceSize(process.env.NODE_OPTIONS, OPTIMAL_HEAP);
 
 function buildNpmEnv() {
   const env = { ...process.env }; // 已繼承 NODE_OPTIONS（含 heap 限制）
@@ -118,7 +164,7 @@ function ensureDependencies(callback) {
     if (signal === "SIGKILL") {
       console.error(`[start] ❌ npm install 因記憶體不足被系統終止 (OOM Kill)！`);
       console.error(`[start] 系統總記憶體：${getTotalMemMB()}MB，V8 堆疊限制：${OPTIMAL_HEAP}MB`);
-      console.error(`[start] 建議：增加容器記憶體限制（≥512MB），或設定 MAX_OLD_SPACE 環境變數。`);
+      console.error(`[start] 建議：增加容器記憶體限制（≥512MB），或設定 memory 環境變數。`);
       process.exit(1);
     }
     if (code !== 0) {
