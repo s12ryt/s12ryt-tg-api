@@ -411,7 +411,6 @@
     "/users": pageUsers,
     "/groups": pageGroups,
     "/all-usage": pageAllUsage,
-    "/settings": pageSettings,
     "/api-test": pageApiTest,
     "/model-catch": pageModelCatch,
     "/model-mapping": pageModelMapping,
@@ -423,6 +422,10 @@
 
   function handleRoute() {
     const hash = location.hash.slice(1) || "/dashboard";
+    if (hash === "/settings") {
+      location.hash = "#/system";
+      return;
+    }
     const route = routes[hash];
 
     // 更新導覽列
@@ -953,7 +956,8 @@
               </div>
               <div style="font-size:13px;">
                 <strong>Keys:</strong> ${(p.api_keys || []).length} 個 &nbsp;|&nbsp;
-                <strong>模型:</strong> ${(p.models_list || []).length} 個
+                <strong>模型:</strong> ${(p.models_list || []).length} 個 &nbsp;|&nbsp;
+                <strong>User-Agent:</strong> ${p.user_agent ? "自訂" : "繼承"}
               </div>
               ${p.models ? `<details style="margin-top:8px;"><summary style="cursor:pointer;color:var(--text-secondary);font-size:13px;">查看模型列表</summary><div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:8px;">${(p.models_list||[]).map(m=>`<code style="background:var(--bg-primary);padding:2px 6px;border-radius:4px;font-size:11px;">${esc(m)}</code>`).join("")}</div></details>` : ""}
             </div>
@@ -1123,6 +1127,10 @@
           <input type="url" id="pf-url" value="${p ? esc(p.base_url) : ""}" placeholder="https://api.openai.com/v1">
         </div>
         <div class="form-group">
+          <label>User-Agent（可選）</label>
+          <input type="text" id="pf-user-agent" value="${p ? esc(p.user_agent || "") : ""}" placeholder="留空使用全域預設">
+        </div>
+        <div class="form-group">
           <label>API Keys</label>
           <div id="pf-keys-container"></div>
           <button type="button" class="btn btn-ghost btn-sm" id="btn-pf-add-key" style="margin-top:4px;">+ 新增 Key</button>
@@ -1194,6 +1202,7 @@
               name: modalBody.querySelector("#pf-name").value.trim(),
               api_type: modalBody.querySelector("#pf-type").value,
               base_url: modalBody.querySelector("#pf-url").value.trim(),
+              user_agent: modalBody.querySelector("#pf-user-agent").value.trim(),
               api_key: keysCollected.join(","),
               key_strategy: modalBody.querySelector("#pf-key-strategy").value,
               models: modelNames.join(","),
@@ -2038,44 +2047,6 @@
   }
 
   // =========================================================================
-  // Pages — Settings (Admin)
-  // =========================================================================
-
-  async function pageSettings() {
-    if (!state.user?.isAdmin) { location.hash = "#/dashboard"; return; }
-    const body = setPage("系統設定", "管理 API 端點 URL 等系統設定");
-    body.innerHTML = loading();
-
-    try {
-      const data = await API.get("/web/api/admin/settings");
-      const settings = data.settings || {};
-
-      body.innerHTML = `
-        <div class="card">
-          <div class="card-title">${ic.settings} 系統設定</div>
-          <div class="form-group">
-            <label>API 端點 URL</label>
-            <input type="url" id="set-api-url" value="${esc(settings.api_url || "")}">
-            <div class="hint">這是顯示給用戶的 API 端點地址（如 https://api.example.com:8000）</div>
-          </div>
-          <button class="btn btn-primary" id="btn-save-settings">儲存</button>
-        </div>
-      `;
-
-      $("#btn-save-settings").onclick = async () => {
-        try {
-          await API.put("/web/api/admin/settings", {
-            api_url: $("#set-api-url").value.trim(),
-          });
-          toast("設定已儲存", "success");
-        } catch (err) { toast(err.message, "error"); }
-      };
-    } catch (err) {
-      body.innerHTML = errorState(err.message);
-    }
-  }
-
-  // =========================================================================
   // Pages — API Test (Admin)
   // =========================================================================
 
@@ -2515,16 +2486,33 @@
 
   async function pageSystem() {
     if (!state.user?.isAdmin) { location.hash = "#/dashboard"; return; }
-    const body = setPage("系統管理", "版本資訊、更新與重啟");
+    const body = setPage("系統管理", "系統設定、版本更新與重啟");
     body.innerHTML = loading();
 
     try {
-      const data = await API.get("/web/api/admin/version");
+      const [data, settingsData] = await Promise.all([
+        API.get("/web/api/admin/version"),
+        API.get("/web/api/admin/settings"),
+      ]);
       const ver = data.version || {};
       const clean = data.workingDirClean;
+      const settings = settingsData.settings || {};
 
       let html = `
         <div class="card">
+          <div class="card-title">${ic.link} 系統設定</div>
+          <div class="form-group">
+            <label>API URL</label>
+            <input type="url" id="sys-api-url" value="${esc(settings.api_url || "")}" placeholder="http://localhost:8000">
+          </div>
+          <div class="form-group">
+            <label>全域 Provider User-Agent</label>
+            <input type="text" id="sys-provider-ua" value="${esc(settings.provider_default_user_agent || "")}" placeholder="留空使用 runtime 預設">
+          </div>
+          <button class="btn btn-primary" id="btn-save-settings">儲存設定</button>
+        </div>
+
+        <div class="card" style="margin-top:16px;">
           <div class="card-title">${ic.refresh} 當前版本</div>
           <table class="table" style="margin-bottom:12px;">
             <tr><td style="width:120px;">Commit</td><td><code>${esc(ver.hash || "N/A")}</code></td></tr>
@@ -2559,6 +2547,26 @@
         </div>
       `;
       body.innerHTML = html;
+
+      const saveSettingsBtn = $("#btn-save-settings");
+      if (saveSettingsBtn) {
+        saveSettingsBtn.onclick = async () => {
+          saveSettingsBtn.disabled = true;
+          saveSettingsBtn.textContent = "儲存中...";
+          try {
+            await API.put("/web/api/admin/settings", {
+              api_url: $("#sys-api-url").value.trim(),
+              provider_default_user_agent: $("#sys-provider-ua").value.trim(),
+            });
+            toast("設定已儲存", "success");
+          } catch (err) {
+            toast(err.message, "error");
+          } finally {
+            saveSettingsBtn.disabled = false;
+            saveSettingsBtn.textContent = "儲存設定";
+          }
+        };
+      }
 
       // 檢查更新
       $("#btn-check-update").onclick = async () => {
