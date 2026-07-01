@@ -72,6 +72,7 @@ function createTables(db: SqlJsDatabase): void {
       api_type TEXT NOT NULL CHECK(api_type IN ('openai_chat', 'openai_response', 'anthropic', 'google')),
       base_url TEXT NOT NULL,
       api_key TEXT NOT NULL,
+      user_agent TEXT NOT NULL DEFAULT '',
       models TEXT NOT NULL DEFAULT '',
       enabled INTEGER NOT NULL DEFAULT 1,
       input_price REAL,
@@ -337,6 +338,14 @@ function createTables(db: SqlJsDatabase): void {
     // Column already exists — ignore
   }
 
+  // Migration: add optional per-provider User-Agent label.
+  try {
+    db.run(`ALTER TABLE providers ADD COLUMN user_agent TEXT NOT NULL DEFAULT ''`);
+    console.log("[db] Migration complete: providers.user_agent column added");
+  } catch {
+    // Column already exists — ignore
+  }
+
   // -------------------------------------------------------------------------
   // model_mappings table — display name aliases for provider models
   // -------------------------------------------------------------------------
@@ -469,6 +478,7 @@ interface CachedProvider {
   providerName: string;
   baseUrl: string;
   apiKey: string;
+  userAgent: string;
   keyStrategy: string;
   inputPrice: number | null;
   outputPrice: number | null;
@@ -522,6 +532,7 @@ export function rebuildProviderCache(): void {
         providerName: String(p.name),
         baseUrl: String(p.base_url),
         apiKey: String(p.api_key),
+        userAgent: String(p.user_agent ?? ""),
         keyStrategy: String(p.key_strategy ?? "failover"),
         inputPrice,
         outputPrice,
@@ -802,6 +813,7 @@ export interface Provider {
   api_type: "openai_chat" | "openai_response" | "anthropic" | "google";
   base_url: string;
   api_key: string;
+  user_agent: string;
   key_strategy: string;
   models: string;
   enabled: number;
@@ -812,17 +824,18 @@ export interface Provider {
 }
 
 export function addProvider(
-  provider: Omit<Provider, "id" | "enabled" | "created_at" | "updated_at" | "key_strategy"> & { key_strategy?: string }
+  provider: Omit<Provider, "id" | "enabled" | "created_at" | "updated_at" | "key_strategy" | "user_agent"> & { key_strategy?: string; user_agent?: string }
 ): void {
   console.log(`[db] addProvider: name=${provider.name}, type=${provider.api_type}, models=${provider.models}`);
   runSql(
-    `INSERT INTO providers (name, api_type, base_url, api_key, key_strategy, models, input_price, output_price)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO providers (name, api_type, base_url, api_key, user_agent, key_strategy, models, input_price, output_price)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       provider.name,
       provider.api_type,
       provider.base_url,
       provider.api_key,
+      provider.user_agent ?? "",
       provider.key_strategy ?? "failover",
       provider.models,
       provider.input_price ?? null,

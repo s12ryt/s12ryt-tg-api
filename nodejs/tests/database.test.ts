@@ -132,6 +132,7 @@ describe("Provider CRUD", () => {
       api_type: "openai_chat",
       base_url: "https://api.openai.com/v1",
       api_key: "sk-test-key",
+      user_agent: "s12ryt-test/1.0",
       models: "gpt-4o,gpt-4o-mini",
       input_price: 0.005,
       output_price: 0.015,
@@ -143,6 +144,7 @@ describe("Provider CRUD", () => {
     expect(providers[0].api_type).toBe("openai_chat");
     expect(providers[0].base_url).toBe("https://api.openai.com/v1");
     expect(providers[0].api_key).toBe("sk-test-key");
+    expect(providers[0].user_agent).toBe("s12ryt-test/1.0");
     expect(providers[0].models).toBe("gpt-4o,gpt-4o-mini");
     expect(providers[0].enabled).toBe(1);
     expect(providers[0].input_price).toBe(0.005);
