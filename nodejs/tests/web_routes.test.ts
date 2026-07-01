@@ -821,6 +821,11 @@ describe("Admin Routes — Backups & Rollback", () => {
 describe("Admin Routes — Providers", () => {
   beforeEach(() => {
     vi.mocked(db.getProviders).mockReset();
+    vi.mocked(db.addProvider).mockReset();
+    vi.mocked(db.updateProvider).mockReset();
+    vi.mocked(db.getSetting).mockReset();
+    vi.mocked(db.getSetting).mockReturnValue(null);
+    vi.mocked(db.setSetting).mockReset();
     (globalThis as any).fetch = vi.fn().mockResolvedValue({
       ok: false,
       status: 400,
@@ -836,6 +841,7 @@ describe("Admin Routes — Providers", () => {
         api_type: "google",
         base_url: "https://generativelanguage.googleapis.com/v1beta",
         api_key: JSON.stringify(["secret-google-key"]),
+        user_agent: "GeminiUA/1.0",
         models: "gemini-1.5-pro",
         enabled: 1,
         input_price: 0,
@@ -853,6 +859,104 @@ describe("Admin Routes — Providers", () => {
     expect(res.body.success).toBe(false);
     expect(res.body.url).toContain("key=REDACTED");
     expect(res.body.url).not.toContain("secret-google-key");
+    expect(globalThis.fetch).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+      headers: expect.objectContaining({ "User-Agent": "GeminiUA/1.0" }),
+    }));
+  });
+
+  it("saves sanitized provider User-Agent when adding provider", async () => {
+    const session = adminSession();
+
+    const res = await request(app)
+      .post("/web/api/admin/providers")
+      .set("Authorization", `Bearer ${session}`)
+      .send({
+        name: "OpenAI",
+        api_type: "openai_chat",
+        base_url: "https://api.openai.com/v1/",
+        api_key: "sk-test",
+        models: "gpt-4o",
+        user_agent: " s12ryt-test/1.0 ",
+      });
+
+    expect(res.status).toBe(200);
+    expect(db.addProvider).toHaveBeenCalledWith(expect.objectContaining({
+      user_agent: "s12ryt-test/1.0",
+    }));
+  });
+
+  it("rejects provider User-Agent with newline characters", async () => {
+    const session = adminSession();
+
+    const res = await request(app)
+      .post("/web/api/admin/providers")
+      .set("Authorization", `Bearer ${session}`)
+      .send({
+        name: "OpenAI",
+        api_type: "openai_chat",
+        base_url: "https://api.openai.com/v1",
+        api_key: "sk-test",
+        user_agent: "good\r\nInjected: bad",
+      });
+
+    expect(res.status).toBe(400);
+    expect(db.addProvider).not.toHaveBeenCalled();
+  });
+
+  it("saves sanitized provider User-Agent when updating provider", async () => {
+    const session = adminSession();
+
+    const res = await request(app)
+      .put("/web/api/admin/providers/1")
+      .set("Authorization", `Bearer ${session}`)
+      .send({ user_agent: " ProviderUA/2.0 " });
+
+    expect(res.status).toBe(200);
+    expect(db.updateProvider).toHaveBeenCalledWith(1, expect.objectContaining({
+      user_agent: "ProviderUA/2.0",
+    }));
+  });
+
+  it("returns and updates global provider User-Agent setting", async () => {
+    vi.mocked(db.getSetting).mockImplementation((key: string) => {
+      if (key === "api_url") return "https://proxy.example";
+      if (key === "provider_default_user_agent") return "GlobalUA/1.0";
+      return null;
+    });
+    const session = adminSession();
+
+    const getRes = await request(app)
+      .get("/web/api/admin/settings")
+      .set("Authorization", `Bearer ${session}`);
+
+    expect(getRes.status).toBe(200);
+    expect(getRes.body.settings).toMatchObject({
+      api_url: "https://proxy.example",
+      provider_default_user_agent: "GlobalUA/1.0",
+    });
+
+    const putRes = await request(app)
+      .put("/web/api/admin/settings")
+      .set("Authorization", `Bearer ${session}`)
+      .send({ provider_default_user_agent: " GlobalUA/2.0 " });
+
+    expect(putRes.status).toBe(200);
+    expect(db.setSetting).toHaveBeenCalledWith("provider_default_user_agent", "GlobalUA/2.0");
+  });
+
+  it("rejects global provider User-Agent with newline characters", async () => {
+    const session = adminSession();
+
+    const res = await request(app)
+      .put("/web/api/admin/settings")
+      .set("Authorization", `Bearer ${session}`)
+      .send({ provider_default_user_agent: "Global\nInjected: bad" });
+
+    expect(res.status).toBe(400);
+    expect(db.setSetting).not.toHaveBeenCalledWith(
+      "provider_default_user_agent",
+      expect.any(String)
+    );
   });
 });
 

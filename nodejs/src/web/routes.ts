@@ -122,6 +122,35 @@ function sanitizeProviderTestUrl(url: string, apiType: string): string {
   }
 }
 
+const PROVIDER_DEFAULT_USER_AGENT_SETTING = "provider_default_user_agent";
+const MAX_USER_AGENT_LENGTH = 256;
+
+function sanitizeUserAgent(value: unknown): { ok: true; value: string } | { ok: false; error: string } {
+  if (value === undefined || value === null) return { ok: true, value: "" };
+  if (typeof value !== "string") return { ok: false, error: "User-Agent 必須是文字" };
+  const trimmed = value.trim();
+  if (trimmed.length > MAX_USER_AGENT_LENGTH) {
+    return { ok: false, error: `User-Agent 長度不可超過 ${MAX_USER_AGENT_LENGTH} 字元` };
+  }
+  if (/[\r\n]/.test(trimmed)) {
+    return { ok: false, error: "User-Agent 不可包含換行字元" };
+  }
+  return { ok: true, value: trimmed };
+}
+
+function getProviderDefaultUserAgent(): string {
+  const sanitized = sanitizeUserAgent(getSetting(PROVIDER_DEFAULT_USER_AGENT_SETTING));
+  return sanitized.ok ? sanitized.value : "";
+}
+
+function buildUserAgentHeader(providerUserAgent: unknown): Record<string, string> {
+  const sanitizedProvider = sanitizeUserAgent(providerUserAgent);
+  const userAgent = sanitizedProvider.ok && sanitizedProvider.value
+    ? sanitizedProvider.value
+    : getProviderDefaultUserAgent();
+  return userAgent ? { "User-Agent": userAgent } : {};
+}
+
 // 啟動 OTP/Session 清理任務
 startCleanupTimer();
 
@@ -373,9 +402,15 @@ router.get("/api/admin/providers", (_req: Request, res: Response) => {
 
 /** POST /web/api/admin/providers — 新增供應商 */
 router.post("/api/admin/providers", (req: Request, res: Response) => {
-  const { name, api_type, base_url, api_key, models, model_prices, input_price, output_price, key_strategy } = req.body;
+  const { name, api_type, base_url, api_key, user_agent, models, model_prices, input_price, output_price, key_strategy } = req.body;
   if (!name || !api_type || !base_url) {
     res.status(400).json({ error: "缺少必要欄位: name, api_type, base_url" });
+    return;
+  }
+
+  const sanitizedUserAgent = sanitizeUserAgent(user_agent);
+  if (!sanitizedUserAgent.ok) {
+    res.status(400).json({ error: sanitizedUserAgent.error });
     return;
   }
 
@@ -391,6 +426,7 @@ router.post("/api/admin/providers", (req: Request, res: Response) => {
       api_type,
       base_url: String(base_url).replace(/\/+$/, ""),
       api_key: JSON.stringify(keysArray),
+      user_agent: sanitizedUserAgent.value,
       key_strategy: strategy,
       models: modelsStr,
       input_price: input_price != null ? Number(input_price) : null,
@@ -431,7 +467,7 @@ router.put("/api/admin/providers/:id", (req: Request, res: Response) => {
   }
 
   const data: Record<string, unknown> = {};
-  const { name, api_type, base_url, api_key, models, model_prices, enabled, input_price, output_price, key_strategy } = req.body;
+  const { name, api_type, base_url, api_key, user_agent, models, model_prices, enabled, input_price, output_price, key_strategy } = req.body;
 
   if (name !== undefined) data.name = String(name);
   if (api_type !== undefined) data.api_type = String(api_type);
@@ -441,6 +477,14 @@ router.put("/api/admin/providers/:id", (req: Request, res: Response) => {
     data.api_key = JSON.stringify(keysArray);
   }
   if (key_strategy !== undefined) data.key_strategy = String(key_strategy);
+  if (user_agent !== undefined) {
+    const sanitizedUserAgent = sanitizeUserAgent(user_agent);
+    if (!sanitizedUserAgent.ok) {
+      res.status(400).json({ error: sanitizedUserAgent.error });
+      return;
+    }
+    data.user_agent = sanitizedUserAgent.value;
+  }
   if (models !== undefined) data.models = String(models);
   if (enabled !== undefined) data.enabled = enabled ? 1 : 0;
   if (input_price !== undefined) data.input_price = input_price != null ? Number(input_price) : null;
@@ -928,15 +972,31 @@ router.get("/api/admin/usage", (req: Request, res: Response) => {
 /** GET /web/api/admin/settings — 系統設定 */
 router.get("/api/admin/settings", (_req: Request, res: Response) => {
   const apiUrl = getSetting("api_url") ?? config.DEFAULT_API_URL;
-  res.json({ settings: { api_url: apiUrl } });
+  res.json({
+    settings: {
+      api_url: apiUrl,
+      provider_default_user_agent: getProviderDefaultUserAgent(),
+    },
+  });
 });
 
 /** PUT /web/api/admin/settings — 更新系統設定 */
 router.put("/api/admin/settings", (req: Request, res: Response) => {
-  const { api_url } = req.body;
+  const { api_url, provider_default_user_agent } = req.body;
+
   if (api_url !== undefined) {
     setSetting("api_url", String(api_url).replace(/\/+$/, ""));
   }
+
+  if (provider_default_user_agent !== undefined) {
+    const sanitizedUserAgent = sanitizeUserAgent(provider_default_user_agent);
+    if (!sanitizedUserAgent.ok) {
+      res.status(400).json({ error: sanitizedUserAgent.error });
+      return;
+    }
+    setSetting(PROVIDER_DEFAULT_USER_AGENT_SETTING, sanitizedUserAgent.value);
+  }
+
   res.json({ ok: true });
 });
 
@@ -1268,11 +1328,12 @@ router.post("/api/admin/providers/:id/test-model", async (req: Request, res: Res
       return;
   }
 
+  const requestHeaders = { ...headers, ...buildUserAgentHeader(provider.user_agent) };
   const t0 = Date.now();
   try {
     const resp = await fetch(url, {
       method: "POST",
-      headers,
+      headers: requestHeaders,
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(30_000),
     });
