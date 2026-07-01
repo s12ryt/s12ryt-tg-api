@@ -61,6 +61,7 @@ vi.mock("../src/db/database.js", () => {
     baseUrl: "https://api.openai.com/v1",
     apiKey: "test-key",
     keyStrategy: "failover",
+    userAgent: "ProviderUA/1.0",
     originalModel: "gpt-4o",
     inputPrice: 0.005,
     outputPrice: 0.015,
@@ -149,6 +150,7 @@ vi.mock("../src/db/database.js", () => {
       return undefined;
     }),
     recordUsage: vi.fn(),
+    getSetting: vi.fn(() => null),
     initDbAsync: vi.fn(() => Promise.resolve({})),
     onProviderCacheRebuild: vi.fn(),
     rebuildProviderCache: vi.fn(),
@@ -502,6 +504,7 @@ describe("TestChatCompletionsSuccess", () => {
     expect(bodyArg.model).toBe("gpt-4o");
     expect(configArg.baseUrl).toBe("https://api.openai.com/v1");
     expect(configArg.apiKey).toBe("test-key");
+    expect(configArg.extraHeaders).toEqual({ "User-Agent": "ProviderUA/1.0" });
   });
 
   it("test_provider_error_returns_502", async () => {

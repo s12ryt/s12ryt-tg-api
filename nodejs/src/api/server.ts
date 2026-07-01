@@ -28,7 +28,7 @@ import {
   convertChatCompletionToAnthropic,
   streamAnthropicApi,
 } from "./anthropic_out.js";
-import { getProviders, lookupModelCached, rebuildProviderCache, onProviderCacheRebuild, getAllCachedModelNames, type Provider, getActiveCodingForApiKey, incrementCodingSessionStats, checkModelAllowed, getAllowedModels, getUserByTgId } from "../db/database.js";
+import { getProviders, getSetting, lookupModelCached, rebuildProviderCache, onProviderCacheRebuild, getAllCachedModelNames, type Provider, getActiveCodingForApiKey, incrementCodingSessionStats, checkModelAllowed, getAllowedModels, getUserByTgId } from "../db/database.js";
 import { config } from "../config.js";
 import { preprocessThinking, parseModelThinkingSuffix } from "./thinkingParser.js";
 import { addApiLog } from "./apiLogStore.js";
@@ -147,14 +147,37 @@ async function recordUsageAndCost(
 
 import { selectKey, reportSuccess, reportFailure } from "./keySelector.js";
 
+const PROVIDER_DEFAULT_USER_AGENT_SETTING = "provider_default_user_agent";
+const MAX_USER_AGENT_LENGTH = 256;
+
+type ResolvedProviderConfig = {
+  baseUrl: string;
+  apiKey: string;
+  _keyIndex: number | null;
+  extraHeaders?: Record<string, string>;
+};
+
 interface ResolvedProvider {
   providerType: string;
   providerId: number;
   providerName: string;
-  config: { baseUrl: string; apiKey: string; _keyIndex: number | null };
+  config: ResolvedProviderConfig;
   inputPrice: number | null;
   outputPrice: number | null;
   originalModel: string;
+}
+
+function normalizeUserAgent(value: unknown): string {
+  if (typeof value !== "string") return "";
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > MAX_USER_AGENT_LENGTH || /[\r\n]/.test(trimmed)) return "";
+  return trimmed;
+}
+
+function buildUserAgentHeaders(providerUserAgent: unknown): Record<string, string> | undefined {
+  const userAgent = normalizeUserAgent(providerUserAgent)
+    || normalizeUserAgent(getSetting(PROVIDER_DEFAULT_USER_AGENT_SETTING));
+  return userAgent ? { "User-Agent": userAgent } : undefined;
 }
 
 /**
@@ -168,11 +191,17 @@ function lookupModelDb(modelName: string): ResolvedProvider {
   if (!cached) throw new Error(`Unknown model: ${modelName}`);
 
   const { key, keyIndex } = selectKey(cached.providerId, cached.apiKey, cached.keyStrategy);
+  const extraHeaders = buildUserAgentHeaders(cached.userAgent);
   return {
     providerType: cached.providerType,
     providerId: cached.providerId,
     providerName: cached.providerName,
-    config: { baseUrl: cached.baseUrl, apiKey: key ?? cached.apiKey, _keyIndex: keyIndex },
+    config: {
+      baseUrl: cached.baseUrl,
+      apiKey: key ?? cached.apiKey,
+      _keyIndex: keyIndex,
+      ...(extraHeaders ? { extraHeaders } : {}),
+    },
     inputPrice: cached.inputPrice,
     outputPrice: cached.outputPrice,
     originalModel: cached.originalModel ?? modelName,
@@ -186,7 +215,7 @@ interface DispatchResult {
   providerName: string;
   providerType: string;
   providerId: number;
-  providerConfig: { baseUrl: string; apiKey: string; _keyIndex: number | null };
+  providerConfig: ResolvedProviderConfig;
   inputPrice: number | null;
   outputPrice: number | null;
 }

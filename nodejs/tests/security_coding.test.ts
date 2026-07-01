@@ -102,6 +102,7 @@ vi.mock("../src/db/database.js", () => {
       created_at: "2024-01-01",
     })),
     recordUsage: vi.fn(),
+    getSetting: vi.fn(() => null),
     initDbAsync: vi.fn(() => Promise.resolve({})),
     onProviderCacheRebuild: vi.fn(),
     rebuildProviderCache: vi.fn(),
