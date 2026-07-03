@@ -420,6 +420,28 @@
 
   window.addEventListener("hashchange", handleRoute);
 
+  function setMobileNav(open) {
+    const sidebar = $("#sidebar");
+    const overlay = $("#mobile-nav-overlay");
+    const toggle = $("#mobile-nav-toggle");
+    if (!sidebar || !overlay || !toggle) return;
+
+    sidebar.classList.toggle("open", open);
+    overlay.classList.toggle("open", open);
+    overlay.setAttribute("aria-hidden", open ? "false" : "true");
+    toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    document.body.classList.toggle("nav-open", open);
+  }
+
+  function closeMobileNav() {
+    setMobileNav(false);
+  }
+
+  function toggleMobileNav() {
+    const sidebar = $("#sidebar");
+    setMobileNav(!sidebar.classList.contains("open"));
+  }
+
   function handleRoute() {
     const hash = location.hash.slice(1) || "/dashboard";
     if (hash === "/settings") {
@@ -434,7 +456,7 @@
     if (navEl) navEl.classList.add("active");
 
     // 行動端：導航後自動收合側欄
-    $("#sidebar").classList.remove("open");
+    closeMobileNav();
 
     if (route) {
       route();
@@ -522,23 +544,25 @@
 
         <div class="card">
           <div class="card-title">${ic.zap} 有效限制</div>
-          <table>
-            <tbody>
-              <tr><td>RPM（每分鐘請求）</td><td><strong>${l.rpm || "無限制"}</strong></td></tr>
-              <tr><td>TPM（每分鐘 Token）</td><td><strong>${fmtNum(l.tpm || 0)}</strong></td></tr>
-              <tr><td>並發連接</td><td><strong>${l.concurrency || "無限制"}</strong></td></tr>
-              <tr><td>每日 Token 上限</td><td><strong>${l.daily_token ? fmtNum(l.daily_token) : "無限制"}</strong></td></tr>
-              <tr><td>每月 Token 上限</td><td><strong>${l.monthly_token ? fmtNum(l.monthly_token) : "無限制"}</strong></td></tr>
-              <tr><td>每日花費上限</td><td><strong>${l.daily_cost ? fmtCost(l.daily_cost) : "無限制"}</strong></td></tr>
-              <tr><td>每月花費上限</td><td><strong>${l.monthly_cost ? fmtCost(l.monthly_cost) : "無限制"}</strong></td></tr>
-              <tr><td>使用期限</td><td><strong>${l.expires_at ? fmtDate(l.expires_at) : "永久"}</strong></td></tr>
-            </tbody>
-          </table>
+          <div class="table-wrap table-wrap-compact">
+            <table>
+              <tbody>
+                <tr><td>RPM（每分鐘請求）</td><td><strong>${l.rpm || "無限制"}</strong></td></tr>
+                <tr><td>TPM（每分鐘 Token）</td><td><strong>${fmtNum(l.tpm || 0)}</strong></td></tr>
+                <tr><td>並發連接</td><td><strong>${l.concurrency || "無限制"}</strong></td></tr>
+                <tr><td>每日 Token 上限</td><td><strong>${l.daily_token ? fmtNum(l.daily_token) : "無限制"}</strong></td></tr>
+                <tr><td>每月 Token 上限</td><td><strong>${l.monthly_token ? fmtNum(l.monthly_token) : "無限制"}</strong></td></tr>
+                <tr><td>每日花費上限</td><td><strong>${l.daily_cost ? fmtCost(l.daily_cost) : "無限制"}</strong></td></tr>
+                <tr><td>每月花費上限</td><td><strong>${l.monthly_cost ? fmtCost(l.monthly_cost) : "無限制"}</strong></td></tr>
+                <tr><td>使用期限</td><td><strong>${l.expires_at ? fmtDate(l.expires_at) : "永久"}</strong></td></tr>
+              </tbody>
+            </table>
+          </div>
         </div>
 
         <div class="card">
           <div class="card-title">${ic.link} 快速操作</div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <div class="action-row">
             <a href="#/keys" class="btn btn-primary">管理 API Keys</a>
             <a href="#/coding" class="btn btn-ghost">Coding 設定</a>
             <a href="#/usage" class="btn btn-ghost">查看用量</a>
@@ -564,8 +588,8 @@
       const keys = data.keys || [];
 
       body.innerHTML = `
-        <div style="margin-bottom:16px;">
-          <button class="btn btn-primary" id="btn-add-key">＋ 新增 API Key</button>
+        <div class="action-row action-row-spaced">
+          <button class="btn btn-primary" id="btn-add-key">${ic.key} 新增 API Key</button>
         </div>
         ${keys.length === 0
           ? `<div class="empty-state"><div class="icon">${ic.key}</div><div class="title">尚無 API Key</div><p>點擊上方按鈕新增</p></div>`
@@ -579,9 +603,9 @@
                     <td>${Number(k.is_active) === 1 ? '<span class="badge badge-success">啟用</span>' : '<span class="badge badge-danger">停用</span>'}</td>
                     <td>${fmtDate(k.created_at)}</td>
                     <td style="display:flex;gap:4px;">
-                      <button class="btn-icon" onclick="window._viewKey(${k.id})" title="查看完整 Key">${ic.eye}</button>
-                      <button class="btn-icon" onclick="window._copyKey(${k.id})" title="複製完整 Key">${ic.clipboard}</button>
-                      <button class="btn-icon danger" onclick="window._delKey(${k.id})" title="刪除">${ic.x}</button>
+                      <button class="btn-icon" onclick="window._viewKey(${k.id})" title="查看完整 Key" aria-label="查看完整 Key">${ic.eye}</button>
+                      <button class="btn-icon" onclick="window._copyKey(${k.id})" title="複製完整 Key" aria-label="複製完整 Key">${ic.clipboard}</button>
+                      <button class="btn-icon danger" onclick="window._delKey(${k.id})" title="刪除" aria-label="刪除 API Key">${ic.x}</button>
                     </td>
                   </tr>
                 `).join("")}
@@ -602,7 +626,7 @@
               <p style="margin-bottom:12px;color:var(--text-secondary);">完整 API Key：</p>
               <div class="key-display">
                 <span>${esc(fullKey)}</span>
-                <button class="copy-btn" id="modal-copy-key" title="複製">${ic.clipboard}</button>
+                <button class="copy-btn" id="modal-copy-key" title="複製" aria-label="複製完整 Key">${ic.clipboard}</button>
               </div>
               <p style="margin-top:8px;color:var(--text-muted);font-size:12px;">建立時間：${fmtDate(data.key.created_at)}</p>
             `,
@@ -649,11 +673,18 @@
           <p style="margin-bottom:12px;color:var(--text-secondary);">請立即複製保存，此 Key 只會顯示一次：</p>
           <div class="key-display">
             <span>${esc(result.key)}</span>
-            <button class="copy-btn" onclick="navigator.clipboard.writeText('${esc(result.key)}');this.textContent='✓';">${ic.clipboard}</button>
+            <button class="copy-btn" id="btn-copy-new-key" title="複製 API Key" aria-label="複製 API Key">${ic.clipboard}</button>
           </div>
         `,
         [{ label: "關閉", class: "btn-primary" }]
       );
+      const copyNewKeyBtn = $("#btn-copy-new-key");
+      if (copyNewKeyBtn) {
+        copyNewKeyBtn.onclick = () => {
+          copy(result.key);
+          copyNewKeyBtn.innerHTML = ic.check;
+        };
+      }
       pageKeys();
     } catch (err) {
       toast(err.message, "error");
@@ -2718,12 +2749,8 @@
     };
 
     // 行動端側欄切換
-    $("#mobile-nav-toggle").onclick = () => {
-      $("#sidebar").classList.toggle("open");
-    };
-    $("#mobile-nav-overlay").onclick = () => {
-      $("#sidebar").classList.remove("open");
-    };
+    $("#mobile-nav-toggle").onclick = toggleMobileNav;
+    $("#mobile-nav-overlay").onclick = closeMobileNav;
 
     // Logout
     $("#btn-logout").onclick = async () => {
@@ -2738,7 +2765,10 @@
 
     // ESC 關閉 modal
     document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") closeModal();
+      if (e.key === "Escape") {
+        closeModal();
+        closeMobileNav();
+      }
     });
 
     // 啟動登入流程

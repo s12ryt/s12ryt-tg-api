@@ -24,10 +24,10 @@
   <!-- 主應用 -->
   <div id="app" class="app hidden">
     <!-- 行動端側欄切換按鈕 -->
-    <button class="mobile-nav-toggle" id="mobile-nav-toggle" aria-label="開啟選單">
+    <button class="mobile-nav-toggle" id="mobile-nav-toggle" aria-label="開啟選單" aria-expanded="false" aria-controls="sidebar">
       <svg viewBox="0 0 24 24"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
     </button>
-    <div class="mobile-nav-overlay" id="mobile-nav-overlay"></div>
+    <div class="mobile-nav-overlay" id="mobile-nav-overlay" aria-hidden="true"></div>
 
     <!-- 側邊欄 -->
     <aside class="sidebar" id="sidebar">
