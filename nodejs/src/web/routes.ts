@@ -43,11 +43,13 @@
  *   PUT    /web/api/admin/groups/:id          — 更新分組
  *   DELETE /web/api/admin/groups/:id          — 刪除分組
  *   GET    /web/api/admin/usage               — 全部用量統計
+ *   GET    /web/api/admin/system-usage        — 系統與程式資源佔用
  *   GET    /web/api/admin/settings            — 系統設定
  *   PUT    /web/api/admin/settings            — 更新系統設定
  */
 
 import { Router, type Request, type Response } from "express";
+import os from "os";
 import path from "path";
 import fs from "fs";
 import {
@@ -149,6 +151,128 @@ function buildUserAgentHeader(providerUserAgent: unknown): Record<string, string
     ? sanitizedProvider.value
     : getProviderDefaultUserAgent();
   return userAgent ? { "User-Agent": userAgent } : {};
+}
+
+type CpuTimesSnapshot = { idle: number; total: number };
+type ProcessCpuSnapshot = { usage: NodeJS.CpuUsage; timestamp: bigint };
+
+let lastSystemCpuSnapshot: CpuTimesSnapshot | null = null;
+let lastProcessCpuSnapshot: ProcessCpuSnapshot | null = null;
+
+function roundUsage(value: number, digits = 2): number {
+  const factor = 10 ** digits;
+  return Math.round(value * factor) / factor;
+}
+
+function clampPercent(value: number): number {
+  return Math.max(0, Math.min(100, value));
+}
+
+function bytesToMb(bytes: number): number {
+  return roundUsage(bytes / 1024 / 1024, 2);
+}
+
+function bytesToGb(bytes: number): number {
+  return roundUsage(bytes / 1024 / 1024 / 1024, 2);
+}
+
+function getCpuTimesSnapshot(): CpuTimesSnapshot {
+  const cpus = os.cpus();
+  let idle = 0;
+  let total = 0;
+
+  for (const cpu of cpus) {
+    idle += cpu.times.idle;
+    total += cpu.times.user + cpu.times.nice + cpu.times.sys + cpu.times.idle + cpu.times.irq;
+  }
+
+  return { idle, total };
+}
+
+function calculateSystemCpuPercent(current: CpuTimesSnapshot): number | null {
+  if (!lastSystemCpuSnapshot) {
+    lastSystemCpuSnapshot = current;
+    return null;
+  }
+
+  const idleDelta = current.idle - lastSystemCpuSnapshot.idle;
+  const totalDelta = current.total - lastSystemCpuSnapshot.total;
+  lastSystemCpuSnapshot = current;
+
+  if (totalDelta <= 0) return null;
+  return roundUsage(clampPercent((1 - idleDelta / totalDelta) * 100), 2);
+}
+
+function calculateProcessCpuPercent(cpuCount: number): number | null {
+  const current = { usage: process.cpuUsage(), timestamp: process.hrtime.bigint() };
+  if (!lastProcessCpuSnapshot) {
+    lastProcessCpuSnapshot = current;
+    return null;
+  }
+
+  const usageDelta = process.cpuUsage(lastProcessCpuSnapshot.usage);
+  const elapsedMicros = Number(current.timestamp - lastProcessCpuSnapshot.timestamp) / 1000;
+  lastProcessCpuSnapshot = current;
+
+  if (elapsedMicros <= 0 || cpuCount <= 0) return null;
+  const usedMicros = usageDelta.user + usageDelta.system;
+  return roundUsage(clampPercent((usedMicros / elapsedMicros / cpuCount) * 100), 2);
+}
+
+function getSystemUsageSnapshot() {
+  const cpus = os.cpus();
+  const cpuCount = cpus.length || 1;
+  const totalMem = os.totalmem();
+  const freeMem = os.freemem();
+  const usedMem = Math.max(0, totalMem - freeMem);
+  const memoryUsage = process.memoryUsage();
+  const heapUsedPercent = memoryUsage.heapTotal > 0
+    ? roundUsage((memoryUsage.heapUsed / memoryUsage.heapTotal) * 100, 2)
+    : null;
+
+  return {
+    timestamp: new Date().toISOString(),
+    system: {
+      platform: os.platform(),
+      arch: os.arch(),
+      hostname: os.hostname(),
+      uptimeSec: Math.round(os.uptime()),
+      cpuCount,
+      loadAverage: os.loadavg().map((value) => roundUsage(value, 2)),
+      cpuPercent: calculateSystemCpuPercent(getCpuTimesSnapshot()),
+      memory: {
+        totalBytes: totalMem,
+        usedBytes: usedMem,
+        freeBytes: freeMem,
+        usedPercent: totalMem > 0 ? roundUsage((usedMem / totalMem) * 100, 2) : null,
+        totalGb: bytesToGb(totalMem),
+        usedGb: bytesToGb(usedMem),
+        freeGb: bytesToGb(freeMem),
+      },
+    },
+    process: {
+      pid: process.pid,
+      uptimeSec: Math.round(process.uptime()),
+      cpuPercent: calculateProcessCpuPercent(cpuCount),
+      memory: {
+        rssBytes: memoryUsage.rss,
+        heapTotalBytes: memoryUsage.heapTotal,
+        heapUsedBytes: memoryUsage.heapUsed,
+        externalBytes: memoryUsage.external,
+        arrayBuffersBytes: memoryUsage.arrayBuffers,
+        rssMb: bytesToMb(memoryUsage.rss),
+        heapTotalMb: bytesToMb(memoryUsage.heapTotal),
+        heapUsedMb: bytesToMb(memoryUsage.heapUsed),
+        externalMb: bytesToMb(memoryUsage.external),
+        arrayBuffersMb: bytesToMb(memoryUsage.arrayBuffers),
+        heapUsedPercent,
+      },
+      versions: {
+        node: process.version,
+        v8: process.versions.v8,
+      },
+    },
+  };
 }
 
 // 啟動 OTP/Session 清理任務
@@ -379,6 +503,11 @@ router.get("/api/url", (_req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 
 router.use("/api/admin", requireAdmin);
+
+/** GET /web/api/admin/system-usage — 系統與程式資源佔用 */
+router.get("/api/admin/system-usage", (_req: Request, res: Response) => {
+  res.json({ usage: getSystemUsageSnapshot() });
+});
 
 // --- Providers ---
 

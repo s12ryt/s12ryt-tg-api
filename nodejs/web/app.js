@@ -23,6 +23,8 @@
     models: [],
   };
 
+  let systemUsageTimer = null;
+
   // =========================================================================
   // API Layer
   // =========================================================================
@@ -115,6 +117,34 @@
     } catch {
       return str;
     }
+  }
+
+  function fmtPercent(value) {
+    return value === null || value === undefined ? "取樣中" : `${fmtNum(value, 2)}%`;
+  }
+
+  function fmtDuration(seconds) {
+    const total = Number(seconds || 0);
+    const days = Math.floor(total / 86400);
+    const hours = Math.floor((total % 86400) / 3600);
+    const minutes = Math.floor((total % 3600) / 60);
+    const secs = Math.floor(total % 60);
+    if (days > 0) return `${days}天 ${hours}小時 ${minutes}分`;
+    if (hours > 0) return `${hours}小時 ${minutes}分`;
+    if (minutes > 0) return `${minutes}分 ${secs}秒`;
+    return `${secs}秒`;
+  }
+
+  function clampPercent(value) {
+    if (value === null || value === undefined || Number.isNaN(Number(value))) return 0;
+    return Math.max(0, Math.min(100, Number(value)));
+  }
+
+  function usageLevelClass(value) {
+    if (value === null || value === undefined) return "";
+    if (value >= 90) return "danger";
+    if (value >= 75) return "warning";
+    return "good";
   }
 
   function copy(text) {
@@ -415,6 +445,7 @@
     "/model-catch": pageModelCatch,
     "/model-mapping": pageModelMapping,
     "/api-logs": pageApiLogs,
+    "/system-usage": pageSystemUsage,
     "/system": pageSystem,
   };
 
@@ -439,7 +470,14 @@
 
   function toggleMobileNav() {
     const sidebar = $("#sidebar");
-    setMobileNav(!sidebar.classList.contains("open"));
+    setMobileNav(sidebar ? !sidebar.classList.contains("open") : false);
+  }
+
+  function stopSystemUsagePolling() {
+    if (systemUsageTimer) {
+      clearInterval(systemUsageTimer);
+      systemUsageTimer = null;
+    }
   }
 
   function handleRoute() {
@@ -457,6 +495,7 @@
 
     // 行動端：導航後自動收合側欄
     closeMobileNav();
+    stopSystemUsagePolling();
 
     if (route) {
       route();
@@ -2524,6 +2563,115 @@
   }
 
   // =========================================================================
+  // Pages — System Usage (Admin)
+  // =========================================================================
+
+  function renderUsageMeter(value) {
+    const width = clampPercent(value);
+    const level = usageLevelClass(value);
+    return `<div class="usage-meter" aria-hidden="true"><div class="usage-meter-fill ${level}" style="width:${width}%;"></div></div>`;
+  }
+
+  function renderUsageCard(title, icon, value, subText, percent) {
+    return `
+      <div class="usage-card">
+        <div class="usage-card-header">
+          <div class="usage-card-title">${icon} ${esc(title)}</div>
+        </div>
+        <div class="usage-card-value">${esc(value)}</div>
+        <div class="usage-card-sub">${esc(subText)}</div>
+        ${renderUsageMeter(percent)}
+      </div>`;
+  }
+
+  function renderUsageDetail(label, value, isText = false) {
+    return `
+      <div class="usage-detail">
+        <div class="usage-detail-label">${esc(label)}</div>
+        <div class="usage-detail-value${isText ? " text" : ""}">${esc(value)}</div>
+      </div>`;
+  }
+
+  function renderSystemUsage(usage) {
+    const sys = usage.system || {};
+    const proc = usage.process || {};
+    const sysMem = sys.memory || {};
+    const procMem = proc.memory || {};
+    const versions = proc.versions || {};
+    const loadAverage = Array.isArray(sys.loadAverage) ? sys.loadAverage.map((v) => fmtNum(v, 2)).join(" / ") : "--";
+    const heapPercent = procMem.heapUsedPercent;
+
+    const cards = [
+      renderUsageCard("系統 CPU", ic.chart, fmtPercent(sys.cpuPercent), `${fmtNum(sys.cpuCount)} 核心 · Load ${loadAverage}`, sys.cpuPercent),
+      renderUsageCard("系統記憶體", ic.zap, fmtPercent(sysMem.usedPercent), `${fmtNum(sysMem.usedGb, 2)} / ${fmtNum(sysMem.totalGb, 2)} GB`, sysMem.usedPercent),
+      renderUsageCard("程式 CPU", ic.trending, fmtPercent(proc.cpuPercent), `PID ${fmtNum(proc.pid)} · 已運行 ${fmtDuration(proc.uptimeSec)}`, proc.cpuPercent),
+      renderUsageCard("程式 Heap", ic.code, fmtPercent(heapPercent), `${fmtNum(procMem.heapUsedMb, 2)} / ${fmtNum(procMem.heapTotalMb, 2)} MB`, heapPercent),
+    ].join("");
+
+    const details = [
+      renderUsageDetail("主機名稱", sys.hostname || "--", true),
+      renderUsageDetail("平台 / 架構", `${sys.platform || "--"} / ${sys.arch || "--"}`, true),
+      renderUsageDetail("CPU 核心", fmtNum(sys.cpuCount)),
+      renderUsageDetail("Load Average", loadAverage),
+      renderUsageDetail("系統運行時間", fmtDuration(sys.uptimeSec)),
+      renderUsageDetail("程式 PID", fmtNum(proc.pid)),
+      renderUsageDetail("程式運行時間", fmtDuration(proc.uptimeSec)),
+      renderUsageDetail("Node / V8", `${versions.node || "--"} / ${versions.v8 || "--"}`, true),
+      renderUsageDetail("RSS", `${fmtNum(procMem.rssMb, 2)} MB`),
+      renderUsageDetail("Heap Total", `${fmtNum(procMem.heapTotalMb, 2)} MB`),
+      renderUsageDetail("External", `${fmtNum(procMem.externalMb, 2)} MB`),
+      renderUsageDetail("Array Buffers", `${fmtNum(procMem.arrayBuffersMb, 2)} MB`),
+    ].join("");
+
+    return `
+      <div class="usage-grid">${cards}</div>
+      <div class="card">
+        <div class="card-title">${ic.settings} 詳細資訊</div>
+        <div class="usage-detail-grid">${details}</div>
+      </div>`;
+  }
+
+  async function pageSystemUsage() {
+    if (!state.user?.isAdmin) { location.hash = "#/dashboard"; return; }
+    const body = setPage("系統佔用", "即時查看主機與目前 Node.js 程式資源佔用");
+    stopSystemUsagePolling();
+
+    body.innerHTML = `
+      <div class="usage-toolbar">
+        <button class="btn btn-ghost" id="btn-refresh-system-usage">${ic.refresh} 刷新</button>
+        <span class="usage-updated" id="system-usage-updated">等待取樣</span>
+      </div>
+      <div id="system-usage-content">${loading("載入系統佔用...")}</div>`;
+
+    let inFlight = false;
+    const refresh = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      const btn = $("#btn-refresh-system-usage");
+      const updated = $("#system-usage-updated");
+      const content = $("#system-usage-content");
+      if (btn) btn.disabled = true;
+      try {
+        const data = await API.get("/web/api/admin/system-usage");
+        if (!content) return;
+        content.innerHTML = renderSystemUsage(data.usage || {});
+        if (updated) updated.textContent = `最後更新：${fmtDate(data.usage?.timestamp)}`;
+      } catch (err) {
+        if (content) content.innerHTML = errorState(err.message);
+        if (updated) updated.textContent = "更新失敗";
+      } finally {
+        if (btn) btn.disabled = false;
+        inFlight = false;
+      }
+    };
+
+    const refreshBtn = $("#btn-refresh-system-usage");
+    if (refreshBtn) refreshBtn.onclick = refresh;
+    await refresh();
+    systemUsageTimer = setInterval(refresh, 1000);
+  }
+
+  // =========================================================================
   // Pages — System Management (Admin)
   // =========================================================================
 
@@ -2763,7 +2911,7 @@
       showLogin("已登出，請從 Bot 重新取得連結");
     };
 
-    // ESC 關閉 modal
+    // ESC 關閉 modal / mobile nav
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape") {
         closeModal();
