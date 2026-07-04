@@ -5,6 +5,7 @@
   "main": "dist/index.js",
   "routes": [
     "GET /plugins/nodejs-example/status",
+    "GET /plugins/nodejs-example/me",
     "POST /plugins/nodejs-example/echo"
   ],
   "commands": [

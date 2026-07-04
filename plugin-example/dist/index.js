@@ -26,9 +26,22 @@ const plugin = {
         uptimeSec: Math.round((Date.now() - startedAt.getTime()) / 1000),
         routes: [
           "GET /plugins/nodejs-example/status",
+          "GET /plugins/nodejs-example/me",
           "POST /plugins/nodejs-example/echo",
         ],
         commands: ["/plugin_example"],
+      });
+    });
+
+    context.router.get("/me", (req, res) => {
+      const auth = context.services.auth.requireRequestAuth(req);
+      const user = context.services.db.getUserByTelegramId(auth.tgUserId);
+
+      res.json({
+        plugin: context.name,
+        auth,
+        user,
+        models: context.services.providers.listModels(),
       });
     });
 
@@ -39,6 +52,8 @@ const plugin = {
         body: toSafeJson(req.body),
       });
     });
+
+    context.services.storage.set("lastSetupAt", new Date().toISOString());
 
     context.registerBotCommand({
       command: "plugin_example",
