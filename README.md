@@ -162,6 +162,12 @@ cp .env.example .env   # 編輯 .env 填入你的設定值
 npm run dev
 ```
 
+## 插件範例
+
+本專案的 Node.js 插件範例已獨立發布，可用來測試插件生命週期、Express 路由與 grammY Bot 指令接入。
+
+插件範例倉庫：[`s12ryt/s12ryt-nodejs-plugin-example`](https://github.com/s12ryt/s12ryt-nodejs-plugin-example)。主專案倉庫仍是 [`s12ryt/s12ryt-tg-api`](https://github.com/s12ryt/s12ryt-tg-api)，兩邊 README 會互相連結，方便從主程式或範例插件任一側找到另一個倉庫。
+
 ## 更新與備份還原（Node.js）
 
 ### 內置更新低空間策略
