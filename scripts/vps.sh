@@ -3,7 +3,9 @@ set -Eeuo pipefail
 
 REPO_URL="${REPO_URL:-https://github.com/s12ryt/s12ryt-tg-api.git}"
 REPO_BRANCH="${REPO_BRANCH:-main}"
-APP_DIR="${APP_DIR:-/opt/s12ryt-tg-api}"
+DEFAULT_APP_DIR="/opt/s12ryt-tg-api"
+APP_DIR="${APP_DIR:-$DEFAULT_APP_DIR}"
+DOCKER_APP_DIR="${DOCKER_APP_DIR:-/opt/s12ryt-tg-api-docker}"
 SERVICE_NAME="${SERVICE_NAME:-s12ryt-tg-api}"
 SERVICE_USER="${SERVICE_USER:-s12ryt}"
 SERVICE_GROUP="${SERVICE_GROUP:-s12ryt}"
@@ -311,6 +313,8 @@ ensure_docker() {
 }
 
 sync_repo() {
+  [ "$DEPLOY_MODE" = "systemd" ] || die "Internal error: sync_repo is only allowed in systemd mode."
+
   APP_DIR="$(prompt_default "Install/update directory" "$APP_DIR")"
   validate_app_dir
   prepare_app_dir_for_runner
@@ -332,7 +336,12 @@ sync_repo() {
 }
 
 prepare_docker_app_dir() {
-  APP_DIR="$(prompt_default "Docker config/data directory" "$APP_DIR")"
+  local default_dir="$APP_DIR"
+  if [ "$APP_DIR" = "$DEFAULT_APP_DIR" ]; then
+    default_dir="$DOCKER_APP_DIR"
+  fi
+
+  APP_DIR="$(prompt_default "Docker config/data directory" "$default_dir")"
   validate_app_dir
   prepare_app_dir_for_runner
   mkdir -p "$APP_DIR/nodejs/data"
@@ -454,6 +463,8 @@ deploy_systemd() {
 }
 
 deploy_docker() {
+  [ "$DEPLOY_MODE" = "docker" ] || die "Internal error: deploy_docker is only allowed in docker mode."
+
   ensure_docker
 
   log "Pulling Docker image: $DOCKER_IMAGE"
@@ -518,7 +529,7 @@ main() {
   log "s12ryt-tg-api VPS installer/updater"
 
   ACTION="$(choose_option "What do you want to do?" "Install or reinstall" "Update existing deployment")"
-  DEPLOY_MODE="$(choose_option "Choose deployment mode" "systemd" "docker")"
+  DEPLOY_MODE="$(choose_option "Choose deployment mode (docker pulls GHCR image and does not clone; systemd clones source and builds locally)" "docker" "systemd")"
   ENV_MODE="$(choose_option "How should .env be filled?" "Interactive input" "Use current environment variables")"
 
   install_base_packages
@@ -533,8 +544,10 @@ main() {
   esac
 
   if [ "$DEPLOY_MODE" = "systemd" ]; then
+    log "systemd mode selected: cloning/updating source repository."
     sync_repo
   else
+    log "Docker mode selected: using GHCR image, no repository clone."
     prepare_docker_app_dir
   fi
   write_env_file
