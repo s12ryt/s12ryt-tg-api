@@ -336,6 +336,19 @@ export function extractInputTextFromBody(body: Record<string, any> | undefined):
     parts.push(body.instructions);
   }
 
+  // Tool / function definitions — providers count these as input tokens
+  // but they are not captured by message content extraction above.
+  // We serialize the full schema so the tokenizer can approximate the cost.
+  const tools = body.tools;
+  if (Array.isArray(tools) && tools.length > 0) {
+    parts.push(JSON.stringify(tools));
+  }
+  // Legacy OpenAI function calling (deprecated but still used by some clients)
+  const functions = body.functions;
+  if (Array.isArray(functions) && functions.length > 0) {
+    parts.push(JSON.stringify(functions));
+  }
+
   return parts.join(" ");
 }
 
