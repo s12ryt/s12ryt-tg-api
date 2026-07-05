@@ -1,5 +1,20 @@
 # Deep Todos
 
+## 2026-07-05 - 插件系統優雅化重構（拆分 manager.ts/services.ts 全域狀態）
+
+- [x] 盤點 `nodejs/src/plugins/` 現況（`manager.ts` 430 行、`services.ts` 573 行皆含大量 module-level 可變全域狀態）與對外使用點（`nodejs/src/index.ts`、`nodejs/src/api/server.ts`、`nodejs/src/web/routes.ts`）。
+- [x] 確認重構範圍：允許小幅調整 `PluginContext`/`services` 公開介面（需同步 `plugin-example/`），錯誤訊息維持「英文=插件作者契約/boot-time 診斷；繁體中文=管理員向 Web Console 操作結果」混合慣例（逐條核對後結論：現狀已大致正確，改為補 JSDoc 而非翻譯）。
+- [x] 新增 `pluginNaming.ts`（ID/檔名淨化與驗證：`normalizePluginId`、`sanitizeFileStem`、`assertPluginFilename`、`assertPluginSize`）。
+- [x] 新增 `pluginPathResolver.ts`（插件入口路徑解析：`resolvePluginPath`、`readEntryFromJson`、`resolvePluginEntryPath`，含測試依賴的英文 console.warn 訊息，字串逐字保留）。
+- [x] 新增 `pluginManifest.ts`（manifest 讀寫：`getPluginDataDir`、`getManifestPath`、`readManifest`、`writeManifest` + 型別 `InstalledPluginRecord`/`PluginInstallKind`/`PluginInstallInput`）。
+- [x] 新增 `pluginRegistry.ts`：封裝 `manager.ts` 原本的 module-level 可變狀態（loaded/installed plugins、per-plugin contexts、bot commands、app/bot 綁定、生命週期旗標）為 `PluginRegistry` class + singleton。
+- [x] 重構 `manager.ts`：改用上述 4 個新模組 + `pluginRegistry`，9 個 export 函式簽名（`getPluginRootRouter`、`bindPluginApp`、`loadNodeJsPlugins`、`initializeNodeJsPlugins`、`startNodeJsPlugins`、`shutdownNodeJsPlugins`、`getPluginBotCommands`、`listNodeJsPlugins`、`installNodeJsPluginFromContent`）完全不變，`index.ts`/`server.ts`/`web/routes.ts` 均無需改動。
+- [x] 新增 `pluginEventBus.ts`（`PluginEventBus` class 封裝事件監聽 Map）與 `pluginTimerRegistry.ts`（`PluginTimerRegistry` class 封裝計時器 Map），重構 `services.ts` 改用這兩個 singleton，並抽出 `freezePublic<T>()` 共用 helper 取代 5 處重複的 `toPublicX` + `Object.freeze` 樣板。
+- [x] 為 `types.ts`（`PluginContext`/`NodeJsPlugin`/`NodeJsPluginContext` 等）與 `index.ts`（barrel export）補強 JSDoc，記錄語言慣例與型別用途/呼叫時機/錯誤處理契約，未變更任何欄位/簽名。
+- [x] 確認 `plugin-example/` 不需修改（公開 API 完全未變，只新增註解，未重讀該目錄，信任先前完整分析）。
+- [x] 驗證：`lsp_diagnostics`（`nodejs/src/plugins/` 10 個檔案 0 錯誤）、`npm run build`（tsc 成功）、`npm test`（16 個測試檔、362 個測試全通過，含 `pluginManager.test.ts`、`pluginServices.test.ts` 所有英文斷言字串/正則未破）。
+- [x] 更新 `agent/deep_todos.md`、`agent/memory.md`、`agent/項目表.md`。
+
 ## 2026-07-05 - 全專案盤點與 agent 文件更新
 
 - [x] 盤點 tracked file 清單；本環境沒有 `rg`，改用 `git ls-files`、glob 與 targeted read。
