@@ -9,6 +9,7 @@
 - [適合誰使用](#適合誰使用)
 - [核心功能](#核心功能)
 - [快速開始](#快速開始)
+- [VPS 一鍵部署](#vps-一鍵部署)
 - [第一次設定流程](#第一次設定流程)
 - [API 使用方式](#api-使用方式)
 - [Telegram Bot 指令](#telegram-bot-指令)
@@ -63,6 +64,35 @@ ADMIN_ID=你的 Telegram User ID
 API_PORT=8000
 DEFAULT_API_URL=http://localhost:8000
 ```
+
+## VPS 一鍵部署
+
+如果要在 Linux VPS 上部署 Node.js 版本，可以使用根目錄的互動式腳本。腳本會自動詢問安裝或更新、部署方式、環境變數填寫方式，並在最後檢查 `/health`。
+
+推薦直接在 VPS 執行以下其中一種方式。
+
+方式一：最短的一行指令，直接把遠端腳本交給 Bash 執行。
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/s12ryt/s12ryt-tg-api/main/scripts/vps.sh | bash
+```
+
+方式二：明確用 Bash process substitution 執行，適合已確認 shell 支援 `<(...)` 的環境。
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/s12ryt/s12ryt-tg-api/main/scripts/vps.sh)
+```
+
+如果已經 clone 專案，也可以在專案根目錄執行 `bash scripts/vps.sh`。
+
+腳本支援：
+
+- 安裝或更新既有部署。
+- `systemd` 部署：自動準備 Node.js 22、安裝依賴、build、建立 service，並以非 root 使用者執行。
+- `docker` 部署：自動準備 Docker、build image、重建 container，並掛載 `nodejs/data`。
+- 互動填寫 `.env`，或讀取目前 shell 的 `BOT_TOKEN`、`ADMIN_ID`、`API_PORT` 等環境變數。
+
+腳本不會設定 HTTPS、Nginx 或 Cloudflare Tunnel；如需對外網域與 TLS，請在服務通過健康檢查後另外配置反向代理。
 
 ### Python 版本（停止維護）
 
