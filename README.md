@@ -1,244 +1,125 @@
 # s12ryt-tg-api
 
-> **維護狀態**：Python 版本已停止維護，目錄已改名為 [`python(not-supported)/`](python(not-supported)/) 作為歷史參考保留。後續功能、修復與文件更新以 Node.js 版本為主。
+透過 Telegram Bot 與 Web 控制台管理多個 AI API 供應商，並對外提供 OpenAI / Anthropic 相容 API 的聚合代理服務。
 
-透過 Telegram Bot 和 Web 控制台管理多個 AI API 供應商的聚合代理服務。支援 OpenAI、Anthropic、Google 等供應商，並對外提供統一的 OpenAI 相容 API 端點，讓你能用一套 API 金鑰存取所有 AI 模型。
+> **維護狀態**：目前主要維護 **Node.js 版本**。Python 版本已停止維護，僅保留在 [`python(not-supported)/`](python(not-supported)/) 作為歷史參考。
 
-目前維護 **Node.js** 實作版本；**Python** 版本已停止支援，僅保留於 `python(not-supported)/` 作為歷史參考。
+## 目錄
 
-## 特色
+- [適合誰使用](#適合誰使用)
+- [核心功能](#核心功能)
+- [快速開始](#快速開始)
+- [第一次設定流程](#第一次設定流程)
+- [API 使用方式](#api-使用方式)
+- [Telegram Bot 指令](#telegram-bot-指令)
+- [Web 控制台](#web-控制台)
+- [插件系統](#插件系統)
+- [更新與備份](#更新與備份)
+- [環境變數](#環境變數)
+- [架構概覽](#架構概覽)
+- [專案結構](#專案結構)
+- [技術棧](#技術棧)
+- [授權](#授權)
 
-### API 代理核心
-- **多供應商聚合** — 統一管理 OpenAI / Anthropic / Google 等 AI API
-- **OpenAI 相容 API** — 對外暴露 `/v1/chat/completions`、`/v1/responses` 端點，可直接替換現有 OpenAI 客戶端
-- **Anthropic 相容 API** — 提供 `/v1/messages` 端點，相容 Anthropic Messages API 格式
-- **格式自動轉換** — 三種 API 格式（Chat Completions / Responses / Messages）之間自動雙向轉換，任一端點可路由到任意供應商
-- **Thinking Effort（推理強度）** — 支援透過 model 名稱後綴（如 `o3(high)`）或請求參數（`reasoning_effort` / `thinking_effort`）指定推理強度（6 級：`xhigh` / `high` / `medium` / `low` / `minimal` / `none`），自動映射到各供應商的原生格式
-- **API 協議自動偵測** — 新增供應商時自動 ping 各端點，以 HTTP 狀態碼 + 信心等級（high/medium/low）分析，並自動推薦最佳類型
-- **串流支援 (SSE)** — 支援 Server-Sent Events 即時串流回應
+## 適合誰使用
 
-### 計費與用量
-- **每模型獨立定價** — 自動從 [models.dev](https://models.dev) 獲取各模型定價（USD / 1M tokens），支援 per-model 計費
-- **Token 用量追蹤** — 自動記錄每個 API Key 的輸入/輸出 Token 數與費用
-- **精確 Token 計數** — 當供應商不回傳 usage 數據時，自動使用精確方法計數：OpenAI 用 tiktoken / gpt-tokenizer（BPE），Anthropic 用 `count_tokens` API，Google 用 `:countTokens` API；API 呼叫失敗或超時（10s）則回退到 CJK/Latin 啟發式估算，確保計費不漏記
+- 想把 OpenAI、Anthropic、Google 或其他相容 API 統一成一組服務入口。
+- 想為不同 Telegram 用戶發放不同 API Key、限制模型、配額、速率與有效期限。
+- 想用 Telegram Bot 或 Web 控制台管理供應商、模型、用戶與用量。
+- 想在低配 VPS 或容器環境部署可自動更新、可備份還原的 AI API 代理服務。
 
-### 高可用性
-- **多金鑰負載均衡** — 每個供應商可設定多個 API Key（逗號分隔），支援 3 種選擇策略：`failover`（預設，首鍵優先，失敗才切）、`round_robin`（輪詢）、`random`（隨機），搭配 Circuit Breaker 故障轉移（連續失敗 ≥3 次 → 60 秒冷卻排除）
-- **Coding Mode** — 用戶可設定 fallback 模型鏈，API 報錯時自動按順序重試下一個模型
-- **模型映射**（僅 Node.js）— 為每個供應商設定模型顯示名稱映射（`model_mappings`），對外顯示自訂名稱，內部自動路由到真實模型
+## 核心功能
 
-### 權限與安全
-- **權限管理系統** — 速率限制（RPM/TPM）、並發上限、配額管理（日/月 Token 與費用）、使用期限、用戶分組，API Key 可覆蓋用戶設定
-- **模型存取限制** — 用戶級別 + API Key 級別的白名單/黑名單控制，Key 級別覆蓋用戶級別
-- **API Key 認證** — `sk-s12ryt-{uuid-v7}` 格式，時間排序、唯一性保證
-
-### 管理
-- **Telegram Bot 管理** — 所有操作透過 Telegram Bot 完成
-- **Web 控制台**（僅 Node.js）— 瀏覽器版管理面板，功能比 Bot 指令更完整直觀，OTP 一次性登入 + Session 認證
-- **API 日誌**（僅 Node.js）— 記憶體中保留最近 50 筆 API 請求日誌（環形緩衝區，不持久化），可用於除錯與監控
-- **指令統合設計** — 選單式多輪對話，少量指令完成所有操作
-- **模型抓取** — `/model_catch` 指令可抓取任意 API 的模型列表
-- **內置更新系統** — `/update` 指令直接從 GitHub Release 更新程式（Blue-Green、git pull + tarball 備援、低空間預檢）
-- **Cloudflare Tunnel**（僅 Node.js）— 內置隧道支援，一鍵暴露本地服務到公網（`quick` 臨時 URL / `token` 命名隧道）
-
-### 效能
-- **Provider routing 快取** — 記憶體中維護 `model_name → provider` 映射，避免每次請求查 DB
-- **API Key LRU 快取** — 256 條目的 LRU cache，認證時省去 2 次 DB 查詢
-- **用量寫入佇列** — 每 5 秒或累積 100 筆批量刷入 DB（單一交易），降低 SQLite 寫入瓶頸
-- **權限查詢優化** — 單次 LEFT JOIN + 60s TTL 快取，每請求 DB 查詢從 ~10 降至 0-2
-
-### 工程
-- **主要維護版本** — Node.js (Express + grammY)；Python (FastAPI + python-telegram-bot) 已停止維護並僅作歷史參考
-- **完整測試** — Node.js 測試持續維護；Python 舊測試保留於 `python(not-supported)/`，不再作為主要支援承諾
-- **CI/CD** — GitHub Actions 自動發布 Release（push to main 更新 `latest`，tag v*.*.* 建立 stable）
-- **低資源容器優化**（僅 Node.js）— 自動偵測可用記憶體，動態調整 V8 heap size、npm 並發與超時；更新流程加入磁碟/inode 預檢、舊暫存清理、devDependencies prune，適配低配 VPS / 容器
-
-## 架構
-
-```
-┌──────────────┐                                                       ┌──────────────────┐
-│  Telegram    │──▶ Bot Handlers ────┐                                 │  AI Providers    │
-│  User / Admin│                     │                                 │                  │
-└──────────────┘                     ├──▶ SQLite DB ◀──▶ API Proxy ──▶ ├──────────────────┤
-                                      │                     (/v1/chat/...)│  OpenAI Chat     │
-┌──────────────┐                     │        (API Key 驗證 & 用量記錄) ├──────────────────┤
-│  Web 瀏覽器   │──▶ Web Routes ─────┘                                 │  OpenAI Response │
-│  (控制台)     │    OTP + Session 認證                                ├──────────────────┤
-└──────────────┘    (/web)                                            │  Anthropic       │
-                                                                     ├──────────────────┤
-                                                                     │  Google          │
-                                                                     └──────────────────┘
-```
-
-## Bot 指令
-
-所有指令採用**選單式多輪對話**設計，一個指令即可完成多種操作。
-
-### 一般用戶指令
-
-需為管理員加入的信任用戶才能使用。
-
-| 指令 | 說明 |
+| 分類 | 功能 |
 |------|------|
-| `/start` | 顯示歡迎訊息 + Web 控制台登入按鈕 |
-| `/url` | 取得目前 API 端點 URL |
-| `/key` | API Key 管理（查看現有 / 新增 / 多選刪除），首次使用自動建立，格式 `sk-s12ryt-{uuid-v7}` |
-| `/usage` | 查看各 API Key 的 Token 用量與費用 |
-| `/coding` | Coding 模式管理（開關 / 設定 fallback 模型鏈，API 報錯時自動重試下一個模型） |
-| `/model_catch` | 抓取任意 API 的模型列表（輸入 URL → 不帶 key 嘗試 → 401/403 再問 key） |
-| `/my_limits` | 查看自己的有效限制（RPM/TPM/並發/配額）與今日/月用量 |
-| `/web` | 取得 Web 控制台一次性登入連結（OTP 5 分鐘有效，登入後 Session 24 小時） |
-
-### 管理員指令
-
-僅限 `ADMIN_ID` 對應的用戶使用。
-
-| 指令 | 說明 |
-|------|------|
-| `/provider` | 供應商管理選單：**新增**（名稱 → 端點 → Key（逗號分隔多個）→ 自動偵測協議 → 模型 → 定價）/ **刪除**（多選）/ **編輯**（逐欄修改）/ **列表**（含用量統計） |
-| `/admin_user` | 用戶管理選單：**新增** / **停用**（多選，停用後通知）/ **刪除**（多選）/ **編輯** TG ID / **移除 API Key**（多選）/ **模型存取限制**（白名單/黑名單，用戶級 + Key 級） |
-| `/uu` | 查看所有用戶的 API Key 用量 |
-| `/sub_url` | 設定/覆蓋 API 端點 URL |
-| `/api_test` | 測試 API 協議連通性（偵測 openai_chat / openai_response / anthropic / google，顯示信心等級 + 推薦） |
-| `/limits` | 權限管理選單：用戶分組 CRUD / 用戶限制設定 / API Key 限制設定（RPM/TPM/並發/日月配額/期限） |
-| `/version` | 查看當前程式版本（commit hash + tag + 日期） |
-| `/update` | 檢查 GitHub Release 更新並一鍵更新（Blue-Green；git pull + tarball 備援；低空間預檢） |
-| `/restart` | 重啟進程 |
-
-## Web 控制台（僅 Node.js）
-
-除了 Telegram Bot 指令外，Node.js 版本提供完整的瀏覽器管理面板，操作更直觀、支援即時預覽和批量操作。
-
-### 認證流程
-
-Web 控制台採用 **OTP + Session** 兩階段認證，無需獨立帳號密碼：
-
-```
-1. 用戶在 Telegram 執行 /web 或點擊選單中的 Web 按鈕
-2. Bot 產生一次性 OTP token（5 分鐘有效）
-3. 用戶點擊連結 → 瀏覽器開啟 Web 控制台 → 前端用 OTP 換取 Session Token
-4. Session Token（24 小時有效）用於後續所有 API 請求
-```
-
-> 管理員透過 `/web` 或各管理指令選單中的 Web 按鈕進入，普通用戶只能看到自己的資料。
-
-### 功能頁面
-
-| 頁面 | 一般用戶 | 管理員 | 說明 |
-|------|:--------:|:------:|------|
-| 儀表板 | ✅ | ✅ | 總覽：模型數量、Key 數量、今日用量摘要 |
-| API Key 管理 | ✅ | ✅ | 新增 / 複製 / 刪除自己的 Key |
-| 用量統計 | ✅ | ✅ | 按Key 分組的 Token 用量與費用 |
-| Coding 模式 | ✅ | ✅ | 開關、設定 fallback 模型鏈 |
-| 使用限制 | ✅ | ✅ | 有效限制（RPM/TPM/並發/配額）+ 今日/月用量 |
-| 模型存取限制 | ✅ | ✅ | 白名單/黑名單查看 |
-| Provider 管理 | — | ✅ | 供應商 CRUD、每模型定價、協議偵測、模型抓取 |
-| 用戶管理 | — | ✅ | 新增/停用/刪除用戶、編輯 TG ID、Key 管理、限制設定 |
-| 用戶分組 | — | ✅ | 分組 CRUD、預設限制模板 |
-| 全域用量 | — | ✅ | 所有用戶用量統計 |
-| 系統管理 | — | ✅ | API URL、Provider User-Agent、版本、更新、回滾與重啟 |
-
-### 技術設計
-
-- **前端**：Vanilla JS SPA（無框架），單頁應用，hash 路由，Lucide 風格 SVG 圖標系統，暗色主題 + 響應式設計（手機/桌面自適應）
-- **後端 API**：Express Router 掛載於 `/web/api/*`，在 API auth/rate/quota 中間件之前，使用獨立的 session 認證中間件
-- **安全**：OTP 一次性使用（用後即刪）、Session 24h 過期、每 10 分鐘自動清理過期 token、API Key 只回傳末 12 碼預覽
+| API 代理 | OpenAI Chat Completions、OpenAI Responses、Anthropic Messages，相容 `/v1/chat/completions`、`/v1/responses`、`/v1/messages` |
+| 供應商聚合 | OpenAI / Anthropic / Google / 相容端點，多供應商、多 API Key、模型映射、自動協議偵測 |
+| 格式轉換 | Chat Completions / Responses / Messages 可跨格式轉換並路由到任意供應商 |
+| 推理強度 | 支援 model 後綴與請求參數指定 `xhigh` / `high` / `medium` / `low` / `minimal` / `none` |
+| 用量與計費 | Token 用量、費用統計、每模型定價、精確 token count fallback |
+| 權限控制 | 用戶分組、API Key 限制、RPM / TPM / 並發 / 日月 token 與費用配額、模型白黑名單 |
+| 高可用 | 多金鑰 `failover` / `round_robin` / `random`、Circuit Breaker、Coding Mode fallback 模型鏈 |
+| 管理介面 | Telegram Bot 選單式管理、Web 控制台、API 日誌、版本更新、備份還原 |
+| 擴充 | Node.js 插件系統，支援 Express route、grammY command 與 `context.services` 穩定內部接口 |
 
 ## 快速開始
 
-### Python 版本（停止維護）
+### Node.js 版本（建議）
 
-> 此版本已停止維護，不建議新部署使用。以下指令僅供查閱舊版行為時參考。
-
-```bash
-cd "python(not-supported)"
-pip install -r requirements.txt
-cp .env.example .env   # 編輯 .env 填入你的設定值
-python main.py
-```
-
-### Node.js 版本
+需求：Node.js 22 LTS 以上。
 
 ```bash
 cd nodejs
 npm install
-cp .env.example .env   # 編輯 .env 填入你的設定值
+cp .env.example .env
 npm run dev
 ```
 
-## 插件範例
+啟動前請先編輯 `nodejs/.env`，至少填入：
 
-本專案的 Node.js 插件範例放在 [`plugin-example/`](plugin-example/)，可用來測試插件生命週期、Express 路由、grammY Bot 指令接入與 `context.services` 穩定內部服務接口。
+```env
+BOT_TOKEN=你的 Telegram Bot Token
+ADMIN_ID=你的 Telegram User ID
+API_PORT=8000
+DEFAULT_API_URL=http://localhost:8000
+```
 
-此範例也已獨立發布為 GitHub 倉庫：[`s12ryt/s12ryt-nodejs-plugin-example`](https://github.com/s12ryt/s12ryt-nodejs-plugin-example)。主專案倉庫仍是 [`s12ryt/s12ryt-tg-api`](https://github.com/s12ryt/s12ryt-tg-api)，兩邊 README 會互相連結，方便從主程式或範例插件任一側找到另一個倉庫。
+### Python 版本（停止維護）
 
-`context.services` 的詳細接口、實際路由範例與安全注意事項請看 [`plugin-example/README.md`](plugin-example/README.md)。
+不建議新部署使用；以下只保留給需要查閱舊版行為的人。
 
-## 更新與備份還原（Node.js）
+```bash
+cd "python(not-supported)"
+pip install -r requirements.txt
+cp .env.example .env
+python main.py
+```
 
-### 內置更新低空間策略
+## 第一次設定流程
 
-- `/update` 使用 Blue-Green 流程：下載到 `.staging`、安裝/編譯/驗證後再原子切換，舊版移到 `.backup-*` 供回滾。
-- 更新前會刪除舊 `.staging`、清理過舊 `.backup-*`（至少保留最新 1 份）、檢查可用磁碟空間與 inode；不足會提前中止並提示清理。
-- staging 不部署/備份 `tests`，也不覆蓋 `data/`、`.env`、`node_modules/`、`.git`；build 後執行 `npm prune --omit=dev --no-audit --no-fund` 以降低 `node_modules` 與備份大小。
-- 2GB VPS 建議仍預留約 `2.0~2.5x` 的 `nodejs/` 目錄大小；遇到 ENOSPC 可在 `nodejs/` 內執行 `rm -rf .staging .backup-* && npm cache clean --force`，並用 `df -h` / `df -i` 檢查。
+1. 到 [@BotFather](https://t.me/BotFather) 建立 Telegram Bot，取得 `BOT_TOKEN`。
+2. 取得你的 Telegram User ID，填入 `ADMIN_ID`。
+3. 啟動 Node.js 服務後，在 Telegram 對 Bot 發送 `/start`。
+4. 管理員使用 `/provider` 或 Web 控制台新增 AI 供應商。
+5. 用 `/admin_user` 新增可信任用戶，或用 `/key` 建立自己的 API Key。
+6. 使用 `/url` 取得 API base URL，搭配 `sk-s12ryt-...` API Key 呼叫代理端點。
 
-### 備份還原安全
-
-- `/backup` 匯出的 JSON 會包含 `providers`、`users`、`api_keys`、`usage`、`settings`、`model_prices` 等資料表。
-- 還原前會先在 shadow DB 以相同 schema 匯入並執行 `PRAGMA foreign_key_check`；備份有孤兒外鍵時會先失敗，不會清空目前正式資料庫。
-- `Invalid backup: foreign key violations detected: model_prices.* -> providers` 代表備份內 `model_prices.provider_id` 找不到對應 `providers.id`；請先修復備份或重新匯出乾淨備份。
-
-## 環境變數
-
-| 變數 | 必填 | 預設值 | 說明 |
-|------|------|--------|------|
-| `BOT_TOKEN` | ✅ | — | Telegram Bot Token（從 [@BotFather](https://t.me/BotFather) 取得） |
-| `ADMIN_ID` | ✅ | — | 管理員的 Telegram User ID |
-| `API_PORT` | ❌ | `8000` | API 代理伺服器監聽埠 |
-| `DATABASE_PATH` | ❌ | `./data/bot.db` | SQLite 資料庫檔案路徑 |
-| `DEFAULT_API_URL` | ❌ | `http://localhost:8000` | 顯示給用戶的預設 API 端點 URL |
-| `memory` | ❌ | 自動偵測 | Node.js V8 heap 上限（MB），支援小數點後一位；例如 `256.5`。所有 Node.js npm scripts、`start.js` 與內置更新流程都會套用（僅 Node.js） |
-| `CLOUDFLARE_TUNNEL` | ❌ | — | Cloudflare 隧道模式：`quick`（臨時 trycloudflare URL）或 `token`（命名隧道，需搭配 `CLOUDFLARE_TOKEN`）（僅 Node.js） |
-| `CLOUDFLARE_TOKEN` | ❌ | — | Cloudflare 命名隧道 Token（`CLOUDFLARE_TUNNEL=token` 時必填）（僅 Node.js） |
-| `GITHUB_MIRROR` | ❌ | — | GitHub 代理鏡像 URL（用於 `git clone` / 下載 Release 時走鏡像，應對網路限制）（僅 Node.js） |
-| `NPM_REGISTRY` | ❌ | — | npm registry mirror URL（`npm install` 時使用自訂源）（僅 Node.js） |
-| `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` | ❌ | — | HTTP/HTTPS 代理（自動偵測系統環境變數，用於所有對外網路請求）（僅 Node.js） |
-
-## API 代理使用方式
+## API 使用方式
 
 ### 端點
 
 | 端點 | 說明 |
 |------|------|
-| `POST /v1/chat/completions` | OpenAI Chat Completions API（含串流） |
+| `POST /v1/chat/completions` | OpenAI Chat Completions API，支援串流 |
 | `POST /v1/responses` | OpenAI Responses API |
-| `POST /v1/messages` | Anthropic Messages API（自動轉換格式） |
+| `POST /v1/messages` | Anthropic Messages API，相容 Anthropic SDK |
 | `GET /v1/models` | 列出所有可用模型 |
 | `GET /health` | 健康檢查 |
 
 ### 認證
 
-在請求標頭帶入 API Key：
+OpenAI 相容用戶端使用：
 
-```
-Authorization: Bearer sk-s12ryt-{your-key}
-```
-
-Anthropic 相容用戶端呼叫 `/v1/messages` 時，也可使用 Anthropic SDK 常見的 `x-api-key` 標頭：
-
-```
-x-api-key: sk-s12ryt-{your-key}
+```http
+Authorization: Bearer sk-s12ryt-your-key
 ```
 
-Google Gemini 相容用戶端也可使用 Google 常見的 `x-goog-api-key` 標頭或 `?key=` 查詢參數；這裡同樣填入本服務發出的 `sk-s12ryt-...` API Key：
+Anthropic 相容用戶端也可使用：
 
-```
-x-goog-api-key: sk-s12ryt-{your-key}
+```http
+x-api-key: sk-s12ryt-your-key
 ```
 
+Google Gemini 相容用戶端也可使用：
+
+```http
+x-goog-api-key: sk-s12ryt-your-key
 ```
-?key=sk-s12ryt-{your-key}
+
+或：
+
+```text
+?key=sk-s12ryt-your-key
 ```
 
 ### 請求範例
@@ -254,264 +135,176 @@ curl http://localhost:8000/v1/chat/completions \
   }'
 ```
 
-### 串流範例
+串流請求只要把 `stream` 設為 `true`。
 
-```bash
-curl http://localhost:8000/v1/chat/completions \
-  -H "Authorization: Bearer sk-s12ryt-your-key-here" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-4o",
-    "messages": [{"role": "user", "content": "Hello!"}],
-    "stream": true
-  }'
-```
+### Thinking Effort
 
-回應格式完全相容 OpenAI API，可直接搭配現有 OpenAI SDK 或任何相容用戶端使用。Token 用量會自動追蹤記錄。
-
-### Thinking Effort（推理強度）
-
-透過三種方式指定推理強度（6 級：`xhigh` / `high` / `medium` / `low` / `minimal` / `none`），系統會自動映射到各供應商的原生格式。無效的後綴（如 `model(extreme)`）會返回 HTTP 400 錯誤而非靜默失敗：
+可用 model 後綴或請求參數指定推理強度，支援等級：`xhigh`、`high`、`medium`、`low`、`minimal`、`none`。
 
 | 方式 | 範例 | 優先級 |
 |------|------|--------|
-| **Model 名稱後綴** | `"model": "o3(high)"` | 最高 |
-| **`reasoning_effort` 參數** | `"reasoning_effort": "high"` | 中 |
-| **`thinking_effort` 參數** | `"thinking_effort": "high"` | 最低 |
-
-> 後綴語法：在 model 名稱後加 `(level)`，如 `claude-sonnet-4(high)`、`o3-mini(medium)`、`gemini-2.5-flash(low)`。系統會自動剝離後綴還原真實 model 名稱。
-
-**各供應商映射：**
-
-OpenAI 系（Chat / Responses）直接 1:1 傳遞 level 字串；Anthropic 用 `budget_tokens` 連續值（`none` → `{type:"disabled"}`）；Google 同時設 `thinkingBudget`（2.5）和 `thinkingLevel`（3.x）。
-
-| 供應商 | xhigh | high | medium | low | minimal | none |
-|--------|-------|------|--------|-----|---------|------|
-| OpenAI Chat | `"xhigh"` | `"high"` | `"medium"` | `"low"` | `"minimal"` | `"none"` |
-| OpenAI Responses | `effort:"xhigh"` | `"high"` | `"medium"` | `"low"` | `"minimal"` | `"none"` |
-| Anthropic budget | `64000` | `32048` | `16000` | `5000` | `1024` | `disabled` |
-| Google budget | `32768` | `24576` | `12288` | `2048` | `512` | `0` |
-| Google level | `"high"` | `"high"` | `"medium"` | `"low"` | `"minimal"` | — |
-
-> Anthropic 供應商會自動確保 `max_tokens > budget_tokens`（必要時提升 max_tokens）。`none` 等級對 Anthropic 設為 `{type:"disabled"}`，對 Google 設 `thinkingBudget:0`（不安裝 thinkingLevel）。
-
-**範例 — 使用 model 後綴：**
+| Model 名稱後綴 | `"model": "o3(high)"` | 最高 |
+| `reasoning_effort` | `"reasoning_effort": "high"` | 中 |
+| `thinking_effort` | `"thinking_effort": "high"` | 最低 |
 
 ```bash
 curl http://localhost:8000/v1/chat/completions \
   -H "Authorization: Bearer sk-s12ryt-your-key-here" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "o3(high)",
-    "messages": [{"role": "user", "content": "証明費馬最後定理"}]
+    "model": "claude-sonnet-4(high)",
+    "messages": [{"role": "user", "content": "分析這段程式碼"}]
   }'
 ```
 
-**範例 — 使用請求參數：**
+## Telegram Bot 指令
 
-```bash
-curl http://localhost:8000/v1/chat/completions \
-  -H "Authorization: Bearer sk-s12ryt-your-key-here" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "claude-sonnet-4",
-    "messages": [{"role": "user", "content": "分析這段程式碼的時間複雜度"}],
-    "thinking_effort": "high"
-  }'
+所有指令採用選單式多輪對話設計。一般用戶需先由管理員加入可信任用戶。
+
+### 一般用戶
+
+| 指令 | 說明 |
+|------|------|
+| `/start` | 顯示歡迎訊息與 Web 控制台登入按鈕 |
+| `/url` | 取得目前 API 端點 URL |
+| `/key` | 查看、新增、刪除自己的 API Key |
+| `/usage` | 查看 Token 用量與費用 |
+| `/coding` | 管理 Coding Mode fallback 模型鏈 |
+| `/model_catch` | 抓取任意 API 的模型列表 |
+| `/my_limits` | 查看自己的有效限制與用量 |
+| `/web` | 取得 Web 控制台一次性登入連結 |
+
+### 管理員
+
+| 指令 | 說明 |
+|------|------|
+| `/provider` | 新增、刪除、編輯、列表供應商，含 API 協議偵測與模型定價 |
+| `/admin_user` | 新增、停用、刪除、編輯用戶與 API Key，設定模型存取限制 |
+| `/uu` | 查看所有用戶的 API Key 用量 |
+| `/sub_url` | 設定或覆蓋 API 端點 URL |
+| `/api_test` | 測試供應商 API 協議連通性 |
+| `/limits` | 管理用戶分組、用戶限制與 API Key 限制 |
+| `/version` | 查看版本、commit hash、tag 與日期 |
+| `/update` | 從 GitHub Release 一鍵更新 |
+| `/restart` | 重啟進程 |
+
+## Web 控制台
+
+Node.js 版本提供瀏覽器管理面板。使用者從 Telegram `/web` 取得一次性登入連結，前端用 OTP 換取 24 小時 Session。
+
+| 頁面 | 一般用戶 | 管理員 | 說明 |
+|------|:--------:|:------:|------|
+| 儀表板 | 是 | 是 | 模型數量、Key 數量、今日用量摘要 |
+| API Key 管理 | 是 | 是 | 新增、複製、刪除自己的 Key |
+| 用量統計 | 是 | 是 | 按 Key 分組的 Token 與費用 |
+| Coding 模式 | 是 | 是 | 開關與 fallback 模型鏈 |
+| 使用限制 | 是 | 是 | RPM / TPM / 並發 / 配額與用量 |
+| 模型存取限制 | 是 | 是 | 白名單與黑名單查看 |
+| Provider 管理 | 否 | 是 | 供應商 CRUD、模型抓取、協議偵測、定價 |
+| 用戶管理 | 否 | 是 | 用戶、API Key、限制設定 |
+| 用戶分組 | 否 | 是 | 分組 CRUD 與預設限制模板 |
+| 全域用量 | 否 | 是 | 所有用戶用量統計 |
+| 系統管理 | 否 | 是 | API URL、Provider User-Agent、版本、更新、回滾、重啟 |
+
+## 插件系統
+
+本專案支援 Node.js 插件。插件可註冊：
+
+- Express route：掛載於 `/plugins/<plugin-id>`。
+- grammY Bot command：接入核心 Bot middleware。
+- `context.services`：穩定內部服務接口，包含 auth、storage、events、scheduler、providers、db facade。
+
+本倉庫內建範例位於 [`plugin-example/`](plugin-example/)。此範例也獨立發布於 [`s12ryt/s12ryt-nodejs-plugin-example`](https://github.com/s12ryt/s12ryt-nodejs-plugin-example)，方便直接透過 Web Console 從 GitHub 安裝。
+
+詳細插件介面、路由範例與安全注意事項請看 [`plugin-example/README.md`](plugin-example/README.md)。
+
+## 更新與備份
+
+### 更新
+
+- `/update` 使用 Blue-Green 流程：先下載到 `.staging`，安裝、編譯、驗證後再切換。
+- 更新前會清理舊 `.staging` 與過舊 `.backup-*`，並檢查磁碟空間與 inode。
+- `data/`、`.env`、`node_modules/`、`.git` 不會被 staging 覆蓋。
+- 低配 VPS 建議保留約 `2.0~2.5x` 的 `nodejs/` 目錄可用空間。
+
+### 備份還原
+
+- `/backup` 匯出的 JSON 包含 providers、users、api_keys、usage、settings、model_prices 等核心表。
+- 還原前會先用 shadow DB 匯入並執行 `PRAGMA foreign_key_check`。
+- 若備份有孤兒外鍵，會在正式 DB 被改動前失敗。
+- 不要匯入不可信來源的備份；備份可合法覆蓋 provider URL、API Key、users 與 quota 等敏感資料。
+
+## 環境變數
+
+| 變數 | 必填 | 預設值 | 說明 |
+|------|------|--------|------|
+| `BOT_TOKEN` | 是 | - | Telegram Bot Token |
+| `ADMIN_ID` | 是 | - | 管理員 Telegram User ID |
+| `API_PORT` | 否 | `8000` | API 代理伺服器監聽埠 |
+| `DATABASE_PATH` | 否 | `./data/bot.db` | SQLite 資料庫檔案路徑 |
+| `DEFAULT_API_URL` | 否 | `http://localhost:8000` | 顯示給用戶的預設 API 端點 URL |
+| `memory` | 否 | 自動偵測 | Node.js V8 heap 上限，單位 MB，支援小數點後一位 |
+| `CLOUDFLARE_TUNNEL` | 否 | - | `quick` 臨時 URL 或 `token` 命名隧道 |
+| `CLOUDFLARE_TOKEN` | 否 | - | Cloudflare 命名隧道 Token |
+| `GITHUB_MIRROR` | 否 | - | GitHub 下載與 clone 的鏡像 URL |
+| `NPM_REGISTRY` | 否 | - | npm registry mirror URL |
+| `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` | 否 | - | 對外網路請求使用的代理 |
+
+## 架構概覽
+
+```text
+Telegram / Web Console
+        |
+        v
+Bot handlers / Web routes
+        |
+        v
+SQLite DB <----> API Proxy <----> AI Providers
+                  |
+                  +-- /v1/chat/completions
+                  +-- /v1/responses
+                  +-- /v1/messages
 ```
-
-此功能在所有三個端點（`/v1/chat/completions`、`/v1/responses`、`/v1/messages`）和 Coding Mode fallback 中均生效，跨格式轉換時也會保留設定。
-
-**Thinking 內容輸出：**
-- Anthropic 的 thinking 內容會透過 `reasoning_content` 欄位輸出（與 OpenAI 的 `reasoning_content` 欄位相容）
-- 串流和非串流回應都支援
-- 範例（非串流）：
-  ```json
-  {
-    "choices": [{
-      "message": {
-        "role": "assistant",
-        "content": "這是模型的回答",
-        "reasoning_content": "這是模型的思考過程..."
-      }
-    }]
-  }
-  ```
-- 範例（串流）：
-  ```json
-  {
-    "choices": [{
-      "delta": {
-        "reasoning_content": "這是模型的思考過程..."
-      }
-    }]
-  }
-  ```
-
-## 效能優化
-
-| 優化項目 | 說明 |
-|----------|------|
-| **Provider routing 快取** | 記憶體中維護 `model_name → provider` 映射，避免每次請求查 DB |
-| **API Key LRU 快取** | 256 條目的 LRU cache，認證時省去 2 次 DB 查詢 |
-| **用量寫入佇列** | 每 5 秒或累積 100 筆批量刷入 DB（單一交易），降低 SQLite 寫入瓶頸 |
-| **Model Prices 單一交易** | `batch_upsert_model_prices` 在同一交易中完成所有 upsert |
-| **快取自動失效** | Provider 增刪改時自動重建快取（`process.nextTick` / `asyncio.ensure_future` 批次化） |
-| **Multi-Key 負載均衡** | 加權隨機選擇金鑰 + Circuit Breaker（連續失敗 ≥3 次 → 60 秒冷卻排除） |
-| **DB 複合索引** | usage / api_keys / users 表新增 4 個複合索引，查詢 O(n) → O(log n) |
-| **有效限制快取** | `getEffectiveLimits` 合併為單次 LEFT JOIN（原 3 次 SELECT）+ 60s TTL 快取 + 6 處失效點，每請求 DB 查詢從 ~10 降至 0-2 |
-| **中間件共享結果** | rateLimiter → quotaChecker 透過 `res.locals` / context 共享已查詢結果，避免重複查詢 |
-| **低資源容器適配**（僅 Node.js）| 啟動時偵測記憶體動態設定 V8 heap 上限 + npm 並發限制 + 超時倍率；更新流程改用流式下載（`pipeline`）避免 OOM，並加入磁碟/inode 預檢、舊暫存/備份清理、跳過 `tests`、build 後 prune devDependencies；API 日誌截斷長請求體；DB 寫入去掉 Buffer 拷貝 |
-
-## 支援的供應商
-
-| 供應商 | API 類型 | 說明 | 認證方式 |
-|--------|----------|------|----------|
-| OpenAI (Chat Completions) | `openai_chat` | OpenAI 相容 `/chat/completions` 端點 | `Authorization: Bearer {key}` |
-| OpenAI (Responses API) | `openai_response` | OpenAI 新版 `/responses` 端點 | `Authorization: Bearer {key}` |
-| Anthropic | `anthropic` | Anthropic Messages API | `x-api-key: {key}` 標頭 |
-| Google | `google` | Google Gemini API | `?key={key}` 查詢參數 |
-
-> 💡 新增供應商時，系統會自動偵測端點支援的 API 協議，以 HTTP 狀態碼 + 信心等級（high/medium/low）分析並推薦最佳類型。三種 API 格式之間會自動轉換，你只需要關注上游供應商實際支援的協議。
-
-### 格式轉換矩陣
-
-所有路徑以 **OpenAI Chat Completions 為中間樞紐格式（Hub）**，括號內為格式轉換次數（越少越高效）。
-
-| 請求端點 | openai_chat | openai_response | anthropic | google |
-|----------|-------------|-----------------|-----------|--------|
-| `/v1/chat/completions` | ✅ 直接轉發（0次） | chat→responses→chat（2次） | chat→messages→chat（2次） | chat→gemini→chat（2次） |
-| `/v1/responses` | responses→chat→responses（2次） | ✅ 直接轉發（0次）＊ | responses→chat→messages→responses（4次） | responses→chat→gemini→chat→responses（4次） |
-| `/v1/messages` | messages→chat→messages（2次） | messages→chat→responses→messages（4次） | ✅ 直接轉發（0次） | messages→chat→gemini→chat→messages（4次） |
-
-> ＊ `/v1/responses → openai_response` 在非 Coding Mode 下有直通優化（`server.ts` fast-path），跳過 Chat 中間格式。
->
-> 💡 **效率建議**：讓入口端點格式與供應商原生格式一致可獲得最佳效率（0 次轉換）。跨兩種格式鴻溝的路徑（4 次）延遲與資訊流失風險最高，應儘量避免。
 
 ## 專案結構
 
-```
+```text
 s12ryt-tg-api/
-├── .github/
-│   └── workflows/
-│       ├── release.yml              # GitHub Actions 自動發布（tag → Release + assets）
-│       └── nodejs-ci.yml            # Node.js CI（build + test + npm audit gate）
-├── python(not-supported)/           # Python 版本（已停止維護，僅作歷史參考）
-│   ├── main.py                      # 程式進入點
-│   ├── config.py                    # 環境變數配置
-│   ├── updater.py                   # 自動更新工具（從 GitHub Releases 拉取最新版）
-│   ├── requirements.txt             # Python 依賴
-│   ├── .env.example                 # 環境變數範本
-│   ├── api/                         # API 代理伺服器
-│   │   ├── server.py                # FastAPI 路由定義
-│   │   ├── key_selector.py          # 多金鑰選擇 + Circuit Breaker
-│   │   ├── middleware.py            # 認證中間件
-│   │   ├── rate_limiter.py          # 速率限制中間件（RPM/TPM 配額管控）
-│   │   ├── quota_checker.py         # 配額檢查中間件（有效模型限制檢查 + 快取）
-│   │   ├── usage_tracker.py         # 用量追蹤
-│   │   ├── responses.py             # 回應格式處理
-│   │   ├── anthropic_out.py         # Anthropic 輸出轉換
-│   │   ├── thinking_parser.py       # Thinking Effort 推理強度解析與注入
-│   │   └── providers/               # 各供應商適配器
-│   │       ├── openai.py            #   openai_chat (Chat Completions)
-│   │       ├── openai_response.py   #   openai_response (Responses API)
-│   │       ├── anthropic.py
-│   │       └── google.py
-│   ├── bot/                         # Telegram Bot
-│   │   ├── filters.py               # 消息過濾器
-│   │   ├── keyboards.py             # 鍵盤 UI 元件
-│   │   ├── handlers/                # 指令處理器
-│   │   │   ├── admin_handlers.py    #   管理員指令（/provider /admin_user 等）
-│   │   │   ├── user_handlers.py     #   用戶指令（/url /key /usage /coding 等）
-│   │   │   ├── model_fetcher.py     #   模型清單抓取
-│   │   │   ├── limit_handlers.py    #   模型限制管理（/limits /my_limits）
-│   │   │   └── update_handlers.py   #   版本更新（/version /update /restart）
-│   │   └── conversations/           # 多輪對話流程
-│   ├── db/                          # 資料庫
-│   │   ├── database.py              # SQLite 操作
-│   │   └── models.py                # 資料模型
-│   └── tests/                       # 測試（214 tests）
-│
-├── nodejs/                          # Node.js 版本
+├── nodejs/                  # 主要維護版本：Express + grammY + TypeScript
 │   ├── src/
-│   │   ├── index.ts                 # 程式進入點
-│   │   ├── config.ts                # 環境變數配置
-│   │   ├── updater.ts               # 自動更新工具（從 GitHub Releases 拉取最新版）
-│   │   ├── net.ts                   # 網路工具（代理/鏡像注入、連通性診斷）
-│   │   ├── tunnel.ts                # Cloudflare Tunnel 隧道（quick 臨時 URL / token 命名隧道）
-│   │   ├── api/                     # API 代理伺服器
-│   │   │   ├── server.ts            #   Express 主程式（掛載 Web 靜態檔 + 路由）
-│   │   │   ├── apiLogStore.ts       #   API 請求日誌（環形緩衝區，記憶體中保留最近 50 筆）
-│   │   │   ├── keySelector.ts       #   多金鑰選擇 + Circuit Breaker（failover / round_robin / random）
-│   │   │   ├── middleware.ts        #   認證中間件（/web 路徑豁免 API Key 檢查）
-│   │   │   ├── rateLimiter.ts       #   速率限制中間件（RPM/TPM 配額管控）
-│   │   │   ├── quotaChecker.ts      #   配額檢查中間件（有效模型限制檢查 + 快取）
-│   │   │   ├── usageTracker.ts
-│   │   │   ├── responses.ts
-│   │   │   ├── anthropic_out.ts
-│   │   │   ├── thinkingParser.ts    #   Thinking Effort 推理強度解析與注入
-│   │   │   └── providers/           #   各供應商適配器
-│   │   │       ├── openai.ts        #     openai_chat (Chat Completions)
-│   │   │       ├── openaiResponse.ts#     openai_response (Responses API)
-│   │   │       ├── anthropic.ts
-│   │   │       └── google.ts
-│   │   ├── bot/                     # Telegram Bot
-│   │   │   ├── filters.ts
-│   │   │   ├── keyboards.ts
-│   │   │   ├── handlers/
-│   │   │   │   ├── adminHandlers.ts #   管理員指令（內嵌 Web 按鈕）
-│   │   │   │   ├── userHandlers.ts  #   用戶指令（/start 含 Web 登入連結）
-│   │   │   │   ├── modelFetcher.ts  #   模型清單抓取（協議偵測 + 模型 + 定價）
-│   │   │   │   ├── limitHandlers.ts #   模型限制管理（內嵌 Web 按鈕）
-│   │   │   │   ├── webHandlers.ts   #   /web 指令 + OTP 登入連結產生
-│   │   │   │   └── updateHandlers.ts#   版本更新
-│   │   │   └── conversations/
-│   │   ├── web/                     # Web 控制台後端
-│   │   │   ├── routes.ts            #   /web/api/* REST API 路由
-│   │   │   └── auth.ts              #   OTP + Session 認證系統
-│   │   └── db/
-│   │       └── database.ts
-│   ├── web/                         # Web 控制台前端（靜態檔案）
-│   │   ├── index.html               #   HTML 骨架 + SVG 導航圖標
-│   │   ├── app.js                   #   Vanilla JS SPA（hash 路由 + API 呼叫）
-│   │   └── style.css                #   暗色主題 CSS（響應式設計）
-│   ├── start.js                     # 容器通用啟動腳本（自動偵測模式）
-│   ├── package.json
-│   ├── tsconfig.json
-│   ├── .npmrc                       # npm 配置（低記憶體容器優化）
-│   ├── .env.example
-│   ├── CHANGELOG.md                 # 版本變更記錄
-│   ├── VERSION                      # 當前版本號
-│   ├── .node-version                # Node.js 版本釘定（Active LTS）
-│   ├── .nvmrc                       # nvm 版本指定
-│   └── scripts/
-│       └── release.ts               # 發布腳本（版本管理 + tag + GitHub Release）
-│
+│   │   ├── api/             # API 代理、middleware、provider adapters
+│   │   ├── bot/             # Telegram Bot handlers 與 conversations
+│   │   ├── db/              # sql.js SQLite database layer
+│   │   ├── plugins/         # Node.js plugin manager 與 services
+│   │   └── web/             # Web 控制台後端 routes / auth
+│   ├── web/                 # Web 控制台前端靜態檔案
+│   ├── tests/               # Node.js 測試
+│   └── package.json
+├── plugin-example/          # Node.js 插件範例
+├── python(not-supported)/   # 已停止維護的 Python 版本，僅作歷史參考
+├── CHANGELOG.md
+├── LICENSE
 └── README.md
 ```
 
 ## 技術棧
 
-| | Python 版本（停止維護） | Node.js 版本 |
-|---|---|---|
-| Bot 框架 | python-telegram-bot | grammY |
-| Web 框架 | FastAPI + Uvicorn | Express |
-| Web 控制台前端 | — | Vanilla JS SPA（無框架，hash 路由） |
-| HTTP 用戶端 | httpx | — |
-| 資料庫 | aiosqlite (SQLite) | sql.js (WASM SQLite) |
-| UUID | uuid-utils | uuid |
-| 語言 | Python 3.10+ | TypeScript / Node.js 22 LTS+ |
+| 項目 | Node.js 版本 | Python 版本 |
+|------|--------------|-------------|
+| 維護狀態 | 主要維護 | 停止維護 |
+| 語言 | TypeScript / Node.js 22+ | Python 3.10+ |
+| Bot | grammY | python-telegram-bot |
+| Web/API | Express | FastAPI + Uvicorn |
+| Web 控制台 | Vanilla JS SPA | 無 |
+| DB | sql.js / SQLite | aiosqlite / SQLite |
+| 測試 | Vitest | 舊測試保留，不作主要支援承諾 |
 
-## License
+## 授權
 
 本專案採用 **GNU Affero General Public License v3.0 (AGPL-3.0)** 授權。
 
 Copyright (C) 2026 s12ryt
 
-這是一個 copyleft 授權，特別針對網路服務軟體設計：
+你可以自由使用、修改、散布本程式；若你修改本程式並透過網路提供服務，依 AGPL-3.0 第 13 條，必須向使用該服務的使用者公開修改後的完整原始碼。任何衍生作品都必須以相同授權釋出。
 
-- 你可以自由使用、修改、散布本程式。
-- **若你修改本程式並透過網路提供服務（例如架設成 API / SaaS）**，依 AGPL-3.0 第 13 條，你必須向使用該服務的使用者**公開你修改後的完整原始碼**。
-- 任何衍生作品都必須以相同的 AGPL-3.0 授權釋出，不得閉源。
-
-完整條款請見專案根目錄的 [`LICENSE`](./LICENSE) 檔案，或參閱 <https://www.gnu.org/licenses/agpl-3.0.html>。
+完整條款請見 [`LICENSE`](./LICENSE)，或參閱 <https://www.gnu.org/licenses/agpl-3.0.html>。
