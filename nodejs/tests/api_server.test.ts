@@ -7,6 +7,7 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import request from "supertest";
+import { EventEmitter } from "events";
 
 // ---------------------------------------------------------------------------
 // Hoisted values — available inside vi.mock() factories
@@ -255,7 +256,7 @@ vi.mock("../src/api/providers/google.js", () => ({
 // Import the app — AFTER all mocks are declared (vitest hoists vi.mock)
 // ---------------------------------------------------------------------------
 
-import app from "../src/api/server.js";
+import app, { forwardStreamAndExtractUsage, extractUsageFromProviderStream } from "../src/api/server.js";
 import { clearApiLogs, getApiLogs } from "../src/api/apiLogStore.js";
 
 // ---------------------------------------------------------------------------
@@ -779,5 +780,172 @@ describe("TestPublicPaths", () => {
   it("test_docs_no_auth", async () => {
     const res = await request(app).get("/docs");
     expect(res.status).not.toBe(401);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TestStreamClientDisconnect — verify upstream is aborted when client closes
+// ---------------------------------------------------------------------------
+
+/** SSE chunk with usage so countTokensAccurate fallback is never triggered. */
+const USAGE_CHUNK = new TextEncoder().encode(
+  `data: {"usage":{"prompt_tokens":5,"completion_tokens":3}}\n\n`,
+);
+
+/** Lightweight mock Response — only needs EventEmitter's on/off + emit. */
+function mockRes(): Response {
+  return new EventEmitter() as unknown as Response;
+}
+
+describe("TestStreamClientDisconnect", () => {
+  // ---- forwardStreamAndExtractUsage ----
+
+  it("forwardStream: consumes all chunks and extracts usage when client stays", async () => {
+    const TOTAL = 3;
+    let yieldCount = 0;
+    let returnCalled = false;
+
+    async function* gen(): AsyncGenerator<Uint8Array> {
+      try {
+        for (let i = 0; i < TOTAL; i++) {
+          yieldCount++;
+          yield USAGE_CHUNK;
+        }
+      } finally {
+        returnCalled = true;
+      }
+    }
+
+    const written: Uint8Array[] = [];
+    const usage = await forwardStreamAndExtractUsage(
+      gen(), (c) => written.push(c),
+      undefined, undefined, undefined, undefined,
+      mockRes(),
+    );
+
+    expect(yieldCount).toBe(TOTAL);
+    expect(returnCalled).toBe(true);
+    expect(written.length).toBe(TOTAL);
+    expect(usage.input_tokens).toBe(5);
+    expect(usage.output_tokens).toBe(3);
+  });
+
+  it("forwardStream: aborts upstream and stops consuming on client disconnect", async () => {
+    const TOTAL = 20;
+    let yieldCount = 0;
+    let returnCalled = false;
+
+    async function* gen(): AsyncGenerator<Uint8Array> {
+      try {
+        for (let i = 0; i < TOTAL; i++) {
+          yieldCount++;
+          yield USAGE_CHUNK;
+          await new Promise((r) => setTimeout(r, 10));
+        }
+      } finally {
+        returnCalled = true;
+      }
+    }
+
+    const res = mockRes();
+    const promise = forwardStreamAndExtractUsage(
+      gen(), () => {},
+      undefined, undefined, undefined, undefined,
+      res,
+    );
+
+    // Let ~3 chunks flow, then disconnect
+    await new Promise((r) => setTimeout(r, 35));
+    res.emit("close");
+
+    await promise;
+
+    expect(returnCalled).toBe(true); // generator's finally ran
+    expect(yieldCount).toBeLessThan(TOTAL); // did NOT consume everything
+    expect(yieldCount).toBeGreaterThanOrEqual(1); // consumed at least one
+  });
+
+  it("forwardStream: resolves without throwing on client disconnect", async () => {
+    async function* infiniteGen(): AsyncGenerator<Uint8Array> {
+      for (;;) {
+        yield USAGE_CHUNK;
+        await new Promise((r) => setTimeout(r, 5));
+      }
+    }
+
+    const res = mockRes();
+    const promise = forwardStreamAndExtractUsage(
+      infiniteGen(), () => {},
+      undefined, undefined, undefined, undefined,
+      res,
+    );
+
+    setTimeout(() => res.emit("close"), 20);
+
+    await expect(promise).resolves.toBeDefined();
+  });
+
+  // ---- extractUsageFromProviderStream ----
+
+  it("extractUsage: completes normally when client stays connected", async () => {
+    const TOTAL = 3;
+    let returnCalled = false;
+
+    async function* gen(): AsyncGenerator<Uint8Array> {
+      try {
+        for (let i = 0; i < TOTAL; i++) {
+          yield USAGE_CHUNK;
+          await new Promise((r) => setTimeout(r, 1));
+        }
+      } finally {
+        returnCalled = true;
+      }
+    }
+
+    let consumed = 0;
+    await extractUsageFromProviderStream(
+      gen(),
+      async (passThrough) => { for await (const _ of passThrough) consumed++; },
+      undefined, undefined, undefined, undefined,
+      mockRes(),
+    );
+
+    expect(consumed).toBe(TOTAL);
+    expect(returnCalled).toBe(true);
+  });
+
+  it("extractUsage: cancels provider stream on client disconnect", async () => {
+    const TOTAL = 20;
+    let yieldCount = 0;
+    let returnCalled = false;
+
+    async function* gen(): AsyncGenerator<Uint8Array> {
+      try {
+        for (let i = 0; i < TOTAL; i++) {
+          yieldCount++;
+          yield USAGE_CHUNK;
+          await new Promise((r) => setTimeout(r, 10));
+        }
+      } finally {
+        returnCalled = true;
+      }
+    }
+
+    const res = mockRes();
+    let consumed = 0;
+    const promise = extractUsageFromProviderStream(
+      gen(),
+      async (passThrough) => { for await (const _ of passThrough) consumed++; },
+      undefined, undefined, undefined, undefined,
+      res,
+    );
+
+    await new Promise((r) => setTimeout(r, 35));
+    res.emit("close");
+
+    await promise;
+
+    expect(returnCalled).toBe(true);
+    expect(yieldCount).toBeLessThan(TOTAL);
   });
 });

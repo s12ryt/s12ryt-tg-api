@@ -450,13 +450,14 @@ function isModelAllowedForRequest(
 // Streaming helper: forward SSE chunks while extracting usage from the last chunk
 // ---------------------------------------------------------------------------
 
-async function forwardStreamAndExtractUsage(
+export async function forwardStreamAndExtractUsage(
   stream: AsyncIterable<Uint8Array>,
   write: (chunk: Uint8Array) => void,
   inputText?: string,
   providerType?: string,
   providerConfig?: ProviderConfig,
   modelName?: string,
+  res?: Response,
 ): Promise<{ input_tokens: number; output_tokens: number }> {
   const decoder = new TextDecoder();
   let inputTokens = 0;
@@ -464,28 +465,59 @@ async function forwardStreamAndExtractUsage(
   let sseBuffer = "";
   let outputText = "";
 
-  for await (const chunk of stream) {
-    write(chunk);
+  // --- Client disconnect handling ---
+  // When the downstream client closes the connection, proactively terminate
+  // the upstream provider generator by calling its return(). This triggers
+  // the provider's finally block (requestTimeout.abort() + reader.cancel()),
+  // immediately releasing the upstream socket/fd instead of waiting for the
+  // provider timeout to fire.
+  const iterator = stream[Symbol.asyncIterator]();
+  let clientClosed = false;
+  const onClientClose = (): void => {
+    clientClosed = true;
+    iterator.return?.().catch(() => undefined);
+  };
+  if (res) res.on("close", onClientClose);
 
-    // Accumulate across TCP chunk boundaries to avoid losing split SSE lines
-    sseBuffer += decoder.decode(chunk, { stream: true });
-    const lines = sseBuffer.split("\n");
-    sseBuffer = lines.pop() ?? ""; // keep incomplete trailing line
+  try {
+    let result = await iterator.next();
+    while (!result.done) {
+      const chunk = result.value;
+      write(chunk);
 
-    for (const line of lines) {
-      extractUsageFromSSE(line.trim());
+      // Accumulate across TCP chunk boundaries to avoid losing split SSE lines
+      sseBuffer += decoder.decode(chunk, { stream: true });
+      const lines = sseBuffer.split("\n");
+      sseBuffer = lines.pop() ?? ""; // keep incomplete trailing line
+
+      for (const line of lines) {
+        extractUsageFromSSE(line.trim());
+      }
+
+      if (clientClosed) break; // stop consuming once client is gone
+      result = await iterator.next();
     }
-  }
 
-  // Flush decoder + remaining buffer
-  sseBuffer += decoder.decode();
-  for (const line of sseBuffer.split("\n")) {
-    extractUsageFromSSE(line.trim());
-  }
+    // Flush decoder + remaining buffer (skip if client disconnected mid-stream)
+    if (!clientClosed) {
+      sseBuffer += decoder.decode();
+      for (const line of sseBuffer.split("\n")) {
+        extractUsageFromSSE(line.trim());
+      }
+    }
 
-  // Fallback: count tokens accurately when provider returns no usage
-  if (!outputTokens && outputText) outputTokens = await countTokensAccurate(providerType ?? "", outputText, providerConfig, modelName);
-  if (!inputTokens && inputText) inputTokens = await countTokensAccurate(providerType ?? "", inputText, providerConfig, modelName);
+    // Fallback: count tokens accurately when provider returns no usage
+    if (!outputTokens && outputText) outputTokens = await countTokensAccurate(providerType ?? "", outputText, providerConfig, modelName);
+    if (!inputTokens && inputText) inputTokens = await countTokensAccurate(providerType ?? "", inputText, providerConfig, modelName);
+  } catch (err) {
+    // If the client disconnected, upstream AbortErrors are expected — swallow them.
+    if (!clientClosed) throw err;
+  } finally {
+    if (res) res.off("close", onClientClose);
+    // Safety net: ensure the provider generator's finally runs even if we
+    // exited via the clientClosed break (idempotent if return() was already called).
+    await iterator.return?.().catch(() => undefined);
+  }
 
   return { input_tokens: inputTokens, output_tokens: outputTokens };
 
@@ -533,13 +565,14 @@ async function forwardStreamAndExtractUsage(
  *
  * Returns the extracted usage after the stream is fully consumed by the transform.
  */
-async function extractUsageFromProviderStream(
+export async function extractUsageFromProviderStream(
   providerStream: AsyncIterable<Uint8Array>,
   transformAndWrite: (providerStream: AsyncIterable<Uint8Array>) => Promise<void>,
   inputText?: string,
   providerType?: string,
   providerConfig?: ProviderConfig,
   modelName?: string,
+  res?: Response,
 ): Promise<{ input_tokens: number; output_tokens: number }> {
   const decoder = new TextDecoder();
   let inputTokens = 0;
@@ -645,9 +678,17 @@ async function extractUsageFromProviderStream(
     },
   };
 
+  // --- Client disconnect handling ---
+  // Mirror forwardStreamAndExtractUsage: when the downstream client closes,
+  // cancel the provider stream so the upstream generator's finally runs
+  // (aborting the fetch and releasing the socket).
+  const onClientClose = (): void => { cancelProviderStream(); };
+  if (res) res.on("close", onClientClose);
+
   try {
     await transformAndWrite(passThrough);
   } finally {
+    if (res) res.off("close", onClientClose);
     if (!streamDone) {
       await cancelProviderStream();
     }
@@ -771,6 +812,7 @@ app.post(
             (chunk) => { chunkCount++; writeAndFlush(res, chunk); },
             extractInputTextFromBody(body),
             providerType, providerConfig, actualModel,
+            res,
           );
 
           // Record streaming usage
@@ -915,6 +957,7 @@ app.post(
                   (chunk) => { writeAndFlush(res, chunk); },
                   extractInputTextFromBody(body),
                   "openai_response", _resolved.config, modelName,
+                  res,
                 );
                 await recordUsageAndCost(
                   req.auth, String(_resolved.providerId), modelName,
@@ -1096,6 +1139,7 @@ app.post(
             },
             extractInputTextFromBody(body),
             providerType, providerConfig, actualModel,
+            res,
           );
 
           // Record streaming usage
@@ -1393,6 +1437,7 @@ app.post(
             },
             extractInputTextFromBody(body),
             providerType, providerConfig, actualModel,
+            res,
           );
 
           await recordUsageAndCost(req.auth, String(providerId), actualModel, streamUsage.input_tokens, streamUsage.output_tokens, inputPrice, outputPrice, isCodingModeMsg);
