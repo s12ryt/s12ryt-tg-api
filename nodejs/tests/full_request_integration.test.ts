@@ -17,12 +17,18 @@ import {
 } from "../src/api/usageTracker.js";
 
 const FULL_REQUEST_PATH = join(__dirname, "../../完整請求.md");
+const fullRequestExists = existsSync(FULL_REQUEST_PATH);
 
-describe.skipIf(!existsSync(FULL_REQUEST_PATH))(
+describe.skipIf(!fullRequestExists)(
   "Full request integration (完整請求.md)",
   () => {
-    const raw = readFileSync(FULL_REQUEST_PATH, "utf-8");
-    const body = JSON.parse(raw);
+    // Vitest's describe.skipIf still runs the factory function (to collect
+    // test definitions) even when the suite is skipped. Guard the file
+    // read so it doesn't throw ENOENT on CI / machines without the file.
+    let body: any = {};
+    if (fullRequestExists) {
+      body = JSON.parse(readFileSync(FULL_REQUEST_PATH, "utf-8"));
+    }
 
     it("request structure sanity check", () => {
       expect(body.model).toBe("agnes-2.0-flash");
