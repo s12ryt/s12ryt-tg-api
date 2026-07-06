@@ -2,6 +2,39 @@
 
 所有版本變更記錄。本檔案由 `npm run release` 自動維護。
 
+## [1.8.6] - 2026-07-06
+
+### ✨ Features
+- add vps deployment script (e0e69fc)
+
+### 🐛 Bug Fixes
+- guard readFileSync in skipped describe factory for CI (5901f24)
+- inject usage into responses stream and conversion paths (20f9af7)
+- inject usage into Anthropic messages SSE stream when provider omits it (57056de)
+- inject fallback usage into streaming SSE for client display (6f66e5d)
+- count Anthropic system prompt and tool content in input tokens (976e7ff)
+- count tools/functions definitions in input token fallback (34919b3)
+- abort upstream stream on client disconnect (1c7cc83)
+- skip invalid plugin paths (69d63f6)
+- prevent docker deploy from cloning source (93004dc)
+- use GHCR image for docker deploy (c66b527)
+- show vps prompt options (1470112)
+
+### ♻️ Refactor
+- modularize plugin manager and services internals (fd5ba85)
+
+### 📝 Documentation
+- record plugin system refactor session (e5f4852)
+- add project memory files (14a2c37)
+- add docker compose deployment example (90f52a5)
+- document vps one-line deploy (3e50304)
+
+### ✅ Tests
+- add full-request integration test for token estimation (c30bebe)
+
+### 📦 Other
+- track agent documentation (766ef10)
+
 ## [1.8.5] - 2026-07-05
 
 ### ✨ Features
