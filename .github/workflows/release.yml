@@ -84,6 +84,26 @@ jobs:
           echo "$CHANGELOG" >> "$GITHUB_OUTPUT"
           echo "CHANGELOG_EOF" >> "$GITHUB_OUTPUT"
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: nodejs/package-lock.json
+
+      - name: Build prebuilt bundle
+        working-directory: nodejs
+        run: |
+          npm ci
+          npm run build
+          npm prune --omit=dev
+
+      - name: Package prebuilt bundle
+        run: |
+          tar -czf s12ryt-tg-api-dist.tar.gz \
+            -C nodejs \
+            dist node_modules web scripts start.js package.json package-lock.json
+
       - name: Delete old latest release
         run: |
           gh release delete latest --yes --cleanup-tag 2>/dev/null || true
@@ -113,6 +133,9 @@ jobs:
           )" \
             --prerelease \
             --target main
+
+      - name: Upload prebuilt asset
+        run: gh release upload latest s12ryt-tg-api-dist.tar.gz --clobber
 
   # ============================================================
   # Job 2: Tag push (v*.*.*) -> 建立正式 Release
@@ -178,6 +201,26 @@ jobs:
           echo "$CHANGELOG" >> "$GITHUB_OUTPUT"
           echo "CHANGELOG_EOF" >> "$GITHUB_OUTPUT"
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: nodejs/package-lock.json
+
+      - name: Build prebuilt bundle
+        working-directory: nodejs
+        run: |
+          npm ci
+          npm run build
+          npm prune --omit=dev
+
+      - name: Package prebuilt bundle
+        run: |
+          tar -czf s12ryt-tg-api-dist.tar.gz \
+            -C nodejs \
+            dist node_modules web scripts start.js package.json package-lock.json
+
       - name: Create stable release
         run: |
           gh release create "${{ steps.tag.outputs.current }}" \
@@ -198,3 +241,6 @@ jobs:
           )" \
             --latest \
             --target main
+
+      - name: Upload prebuilt asset
+        run: gh release upload "${{ steps.tag.outputs.current }}" s12ryt-tg-api-dist.tar.gz --clobber

@@ -34,6 +34,7 @@ vi.mock("../src/db/database.js", () => ({
 
 import {
   getLatestRelease,
+  findPrebuiltAsset,
   getCurrentVersion,
   isWorkingDirClean,
   getBackupList,
@@ -134,6 +135,132 @@ describe("getLatestRelease", () => {
     const result = await getLatestRelease();
     expect(result).not.toBeNull();
     expect(result!.name).toBe("v2.0.0");
+  });
+
+  it("parses assets array from API response", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        tag_name: "v1.8.7",
+        name: "v1.8.7",
+        prerelease: false,
+        published_at: "2024-06-15T10:00:00Z",
+        html_url: "https://github.com/...",
+        tarball_url: "https://api.github.com/...",
+        assets: [
+          {
+            name: "s12ryt-tg-api-dist.tar.gz",
+            browser_download_url: "https://github.com/.../s12ryt-tg-api-dist.tar.gz",
+            size: 12345,
+          },
+          {
+            name: "other-asset.txt",
+            browser_download_url: "https://github.com/.../other-asset.txt",
+            size: 100,
+          },
+        ],
+      }),
+    }) as any;
+
+    const result = await getLatestRelease();
+    expect(result).not.toBeNull();
+    expect(result!.assets).toHaveLength(2);
+    expect(result!.assets[0].name).toBe("s12ryt-tg-api-dist.tar.gz");
+    expect(result!.assets[0].size).toBe(12345);
+    expect(result!.assets[0].browser_download_url).toContain("dist.tar.gz");
+  });
+
+  it("returns empty assets array when API response has no assets field", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        tag_name: "v1.0.0",
+        name: "old release",
+        prerelease: false,
+        published_at: "",
+        html_url: "...",
+        tarball_url: "...",
+      }),
+    }) as any;
+
+    const result = await getLatestRelease();
+    expect(result).not.toBeNull();
+    expect(result!.assets).toEqual([]);
+  });
+});
+
+// ===========================================================================
+// findPrebuiltAsset
+// ===========================================================================
+
+describe("findPrebuiltAsset", () => {
+  it("finds asset by exact name match", () => {
+    const release = {
+      tag: "v1.8.7", name: "v1.8.7", prerelease: false,
+      publishedAt: "", htmlUrl: "", tarballUrl: "",
+      assets: [
+        { name: "s12ryt-tg-api-dist.tar.gz", browser_download_url: "https://example.com/dist.tar.gz", size: 500 },
+      ],
+    };
+    const asset = findPrebuiltAsset(release as any);
+    expect(asset).not.toBeNull();
+    expect(asset!.name).toBe("s12ryt-tg-api-dist.tar.gz");
+    expect(asset!.browser_download_url).toContain("dist.tar.gz");
+  });
+
+  it("finds asset by pattern when exact name absent", () => {
+    const release = {
+      tag: "v1.8.7", name: "v1.8.7", prerelease: false,
+      publishedAt: "", htmlUrl: "", tarballUrl: "",
+      assets: [
+        { name: "s12ryt-tg-api-dist-v1.8.7.tar.gz", browser_download_url: "https://example.com/v187.tar.gz", size: 500 },
+      ],
+    };
+    const asset = findPrebuiltAsset(release as any);
+    expect(asset).not.toBeNull();
+    expect(asset!.name).toContain("dist");
+  });
+
+  it("returns null when no prebuilt asset exists (only unrelated assets)", () => {
+    const release = {
+      tag: "v1.0.0", name: "old", prerelease: false,
+      publishedAt: "", htmlUrl: "", tarballUrl: "",
+      assets: [
+        { name: "unrelated.txt", browser_download_url: "...", size: 10 },
+      ],
+    };
+    const asset = findPrebuiltAsset(release as any);
+    expect(asset).toBeNull();
+  });
+
+  it("returns null when release is null", () => {
+    const asset = findPrebuiltAsset(null);
+    expect(asset).toBeNull();
+  });
+
+  it("returns null when assets array is empty", () => {
+    const release = {
+      tag: "v1.0.0", name: "old", prerelease: false,
+      publishedAt: "", htmlUrl: "", tarballUrl: "",
+      assets: [],
+    };
+    const asset = findPrebuiltAsset(release as any);
+    expect(asset).toBeNull();
+  });
+
+  it("prefers exact name match over pattern match", () => {
+    const release = {
+      tag: "v1.8.7", name: "v1.8.7", prerelease: false,
+      publishedAt: "", htmlUrl: "", tarballUrl: "",
+      assets: [
+        { name: "s12ryt-tg-api-dist-old.tar.gz", browser_download_url: "https://example.com/old.tar.gz", size: 100 },
+        { name: "s12ryt-tg-api-dist.tar.gz", browser_download_url: "https://example.com/exact.tar.gz", size: 500 },
+      ],
+    };
+    const asset = findPrebuiltAsset(release as any);
+    expect(asset).not.toBeNull();
+    expect(asset!.name).toBe("s12ryt-tg-api-dist.tar.gz");
+    expect(asset!.browser_download_url).toContain("exact.tar.gz");
   });
 });
 

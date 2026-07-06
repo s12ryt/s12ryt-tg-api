@@ -44,12 +44,18 @@ const GITHUB_API_BASE = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_R
 
 /** 需要原子交換的項目（這些會被 staging 版本替換） */
 const SWAP_ITEMS = [
-  "src", "dist", "web", "scripts",
+  "src", "dist", "web", "scripts", "start.js",
   "node_modules", "package.json", "package-lock.json", "tsconfig.json",
 ] as const;
 
 /** tarball 中不需要部署到執行環境的項目 */
 const STAGING_SKIP_ITEMS = new Set(["data", ".env", "node_modules", ".git", "tests"]);
+
+/** 預編譯包 asset 檔名（CI 在 Release 時上傳的可運行包） */
+const PREBUILT_ASSET_NAME = "s12ryt-tg-api-dist.tar.gz";
+
+/** 預編譯包內必須包含的進入點（用於下載後驗證完整性） */
+const PREBUILT_ENTRY = join("dist", "index.js");
 
 /** 暫存目錄名稱（新版本在此下載、安裝、編譯） */
 const STAGING_DIR = ".staging";
@@ -156,6 +162,16 @@ export interface VersionInfo {
   tag: string | null;
 }
 
+/** GitHub Release 附帶的下載資產（預編譯包等） */
+export interface ReleaseAsset {
+  /** asset 檔名，例如 "s12ryt-tg-api-dist.tar.gz" */
+  name: string;
+  /** 瀏覽器可下載 URL（更新端用此 URL 下載） */
+  browser_download_url: string;
+  /** asset 大小（位元組） */
+  size: number;
+}
+
 export interface ReleaseInfo {
   /** Release tag 名稱，例如 "v1.2.0" */
   tag: string;
@@ -167,8 +183,10 @@ export interface ReleaseInfo {
   publishedAt: string;
   /** Release 頁面 URL */
   htmlUrl: string;
-  /** Tarball 下載 URL */
+  /** Tarball 下載 URL（源碼快照，不含 .git 歷史） */
   tarballUrl: string;
+  /** Release 附帶的預編譯資產（可能為空陣列，舊版本 Release 沒有） */
+  assets: ReleaseAsset[];
 }
 
 export interface UpdateCheckResult {
@@ -189,8 +207,8 @@ export interface UpdateCheckResult {
 export interface UpdateResult {
   success: boolean;
   message: string;
-  /** 更新方式：blue-green、git 或 tarball */
-  method?: "git" | "tarball" | "blue-green";
+  /** 更新方式：prebuilt（預編譯包，最快）、blue-green（源碼+編譯）、git 或 tarball */
+  method?: "git" | "tarball" | "blue-green" | "prebuilt";
   /** 更新後的 commit hash */
   newHash?: string;
 }
@@ -385,6 +403,12 @@ interface GitHubReleaseApiResponse {
   created_at: string | null;
   html_url: string;
   tarball_url: string;
+  /** Release 附帶的下載資產（預編譯包等），舊版可能沒有此欄位 */
+  assets?: Array<{
+    name: string;
+    browser_download_url: string;
+    size: number;
+  }>;
 }
 
 /**
@@ -418,6 +442,11 @@ export async function getLatestRelease(): Promise<ReleaseInfo | null> {
       publishedAt: data.published_at || data.created_at || "",
       htmlUrl: data.html_url,
       tarballUrl: data.tarball_url,
+      assets: (data.assets ?? []).map((a) => ({
+        name: a.name,
+        browser_download_url: a.browser_download_url,
+        size: a.size,
+      })),
     };
   } catch (err) {
     console.warn(`[updater] GitHub API 請求失敗：${(err as Error).message}`);
@@ -985,12 +1014,178 @@ export async function performBlueGreenUpdate(
 }
 
 /**
- * 執行更新（Blue-Green 方式）
+ * 從 Release 中尋找預編譯包 asset
+ *
+ * 優先匹配精確檔名 PREBUILT_ASSET_NAME；找不到則用 pattern 寬鬆匹配。
+ * 返回 null 表示此 Release 沒有預編譯包（舊版本），呼叫端應 fallback 到 Blue-Green。
+ */
+export function findPrebuiltAsset(release: ReleaseInfo | null): ReleaseAsset | null {
+  if (!release?.assets?.length) return null;
+  const exact = release.assets.find((a) => a.name === PREBUILT_ASSET_NAME);
+  if (exact) return exact;
+  const pattern = release.assets.find((a) =>
+    /^s12ryt-tg-api-dist.*\.tar\.gz$/i.test(a.name),
+  );
+  return pattern ?? null;
+}
+
+/**
+ * 下載預編譯包並解壓到 staging 目錄
+ *
+ * 與 downloadAndExtract 的差異：
+ * - tarball 會有 owner-repo-hash/nodejs/ 包裝層，預編譯包是平鋪或帶單一頂層目錄
+ * - 預編譯包包含 node_modules（不能用 shouldStageItem 過濾，它會跳過 node_modules）
+ *   改用 SWAP_ITEMS 過濾，確保 node_modules 被正確移到 staging
+ */
+async function downloadPrebuiltAndExtract(
+  assetUrl: string,
+  stagingDir: string,
+): Promise<void> {
+  if (existsSync(stagingDir)) {
+    rmSync(stagingDir, { recursive: true, force: true });
+  }
+  mkdirSync(stagingDir, { recursive: true });
+
+  const tmpDir = join(stagingDir, ".tmp");
+  mkdirSync(tmpDir, { recursive: true });
+
+  // Step 1: 下載（流式寫磁碟，避免 OOM）
+  console.log(`[updater] 正在下載預編譯包 ${assetUrl}...`);
+  const resp = await fetchGithub(assetUrl, {
+    timeoutMs: 180_000 * TIMEOUT_MULT,
+    retries: 2,
+    headers: { "User-Agent": `${GITHUB_OWNER}-${GITHUB_REPO}-updater` },
+  });
+  if (!resp.ok) {
+    throw new Error(`下載預編譯包失敗：HTTP ${resp.status}`);
+  }
+  const archivePath = join(tmpDir, "prebuilt.tar.gz");
+  if (resp.body) {
+    await pipeline(resp.body, createWriteStream(archivePath));
+  } else {
+    const buf = Buffer.from(await resp.arrayBuffer());
+    writeFileSync(archivePath, buf);
+  }
+
+  // Step 2: 解壓縮
+  console.log("[updater] 正在解壓縮預編譯包...");
+  execFileSync("tar", ["-xzf", archivePath, "-C", tmpDir], {
+    timeout: 60_000 * TIMEOUT_MULT,
+    stdio: "inherit",
+  });
+
+  // Step 3: 找到內容根目錄
+  // 預編譯包可能是平鋪（tmpDir 直接有 dist/）或帶頂層目錄（tmpDir/<dir>/dist/）
+  let sourceDir = tmpDir;
+  if (!existsSync(join(tmpDir, "dist"))) {
+    const subDir = readdirSync(tmpDir).find(
+      (d) => d !== "prebuilt.tar.gz" && existsSync(join(tmpDir, d, "dist")),
+    );
+    if (!subDir) {
+      throw new Error("預編譯包結構異常：找不到 dist/");
+    }
+    sourceDir = join(tmpDir, subDir);
+  }
+
+  // Step 4: 將 SWAP_ITEMS 中存在的項目移到 staging 根目錄
+  // 用 SWAP_ITEMS 而非 shouldStageItem，因為預編譯包含 node_modules（後者會過濾掉）
+  for (const item of SWAP_ITEMS) {
+    const src = join(sourceDir, item);
+    if (existsSync(src)) {
+      renameSync(src, join(stagingDir, item));
+    }
+  }
+
+  // 清理暫存解壓目錄
+  rmSync(tmpDir, { recursive: true, force: true });
+}
+
+/**
+ * 執行預編譯包更新（輕量快速路徑）
+ *
+ * 流程：下載預編譯包 → 解壓 → 驗證 → 原子交換 → 清理
+ *
+ * 與 performBlueGreenUpdate 的差異：
+ * - 跳過 npm install（node_modules 已在包內）
+ * - 跳過 npm run build（dist/ 已編譯）
+ * - 秒級完成，適用於容器/低資源環境
+ */
+export async function performPrebuiltUpdate(
+  asset: ReleaseAsset,
+  onProgress?: ProgressCallback,
+): Promise<UpdateResult> {
+  const cwd = process.cwd();
+  const stagingPath = join(cwd, STAGING_DIR);
+
+  try {
+    // Step 0: 清理舊暫存 + 磁碟空間檢查
+    onProgress?.("🧹 正在清理舊暫存並檢查磁碟空間...");
+    prepareUpdateWorkspace(cwd, stagingPath);
+
+    // Step 1: 下載並解壓預編譯包
+    const sizeMB = (asset.size / BYTES_PER_MB).toFixed(1);
+    onProgress?.(`📥 正在下載預編譯包（${sizeMB} MB）...`);
+    await downloadPrebuiltAndExtract(asset.browser_download_url, stagingPath);
+    console.log("[updater] 預編譯包下載解壓完成");
+
+    // Step 2: 驗證完整性
+    const hasDist = existsSync(join(stagingPath, PREBUILT_ENTRY));
+    const hasNodeModules = existsSync(join(stagingPath, "node_modules"));
+    if (!hasDist || !hasNodeModules) {
+      throw new Error(
+        `預編譯包驗證失敗：dist/index.js=${hasDist}, node_modules=${hasNodeModules}`,
+      );
+    }
+    console.log("[updater] 預編譯包驗證通過");
+
+    // Step 3: 原子交換（複用 Blue-Green 的交換邏輯）
+    onProgress?.("🔄 正在切換版本...");
+    const backupName = atomicSwap(stagingPath);
+    console.log(`[updater] 交換完成，備份：${backupName}`);
+
+    // Step 4: 清理舊備份
+    cleanOldBackups();
+
+    return {
+      success: true,
+      message: `預編譯更新成功！（備份：${backupName}）`,
+      method: "prebuilt",
+    };
+  } catch (err: any) {
+    try {
+      rmSync(stagingPath, { recursive: true, force: true });
+    } catch { /* ignore */ }
+    const message = isNoSpaceError(err)
+      ? buildNoSpaceErrorMessage(getDiskSpaceInfo(cwd))
+      : err.message;
+    return {
+      success: false,
+      message: `預編譯更新失敗：${message}`,
+    };
+  }
+}
+
+/**
+ * 執行更新（自動偵測最佳路徑）
+ *
+ * 優先順序：
+ *   1. 預編譯包（prebuilt）— 最快，零 install 零 build，適用於容器/低資源環境
+ *   2. Blue-Green（源碼 tarball + npm install + build）— fallback，舊版本 Release 用
  */
 export async function performUpdate(
   onProgress?: ProgressCallback,
 ): Promise<UpdateResult> {
   const release = await getLatestRelease();
+
+  // 優先使用預編譯包
+  const prebuiltAsset = findPrebuiltAsset(release);
+  if (prebuiltAsset) {
+    console.log(`[updater] 偵測到預編譯包：${prebuiltAsset.name}，使用輕量更新路徑`);
+    return performPrebuiltUpdate(prebuiltAsset, onProgress);
+  }
+
+  // Fallback: Blue-Green（源碼 + 編譯）
+  console.log("[updater] 此 Release 沒有預編譯包，使用 Blue-Green 更新路徑");
   const tarballUrl = release?.tarballUrl ?? `${GITHUB_API_BASE}/tarball/main`;
   return performBlueGreenUpdate(tarballUrl, onProgress);
 }
