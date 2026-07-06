@@ -1060,4 +1060,117 @@ describe("TestStreamClientDisconnect", () => {
     const outputTokenMatches = allOutput.match(/output_tokens/g) || [];
     expect(outputTokenMatches.length).toBe(1);
   });
+
+  // ---- OpenAI Responses direct path: response.completed patching ----
+
+  it("forwardStream (responses): patches usage into response.completed when provider omits usage", async () => {
+    const enc = new TextEncoder();
+    async function* gen(): AsyncGenerator<Uint8Array> {
+      yield enc.encode('event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"Hello world test"}\n\n');
+      yield enc.encode('event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[],"usage":null}}\n\n');
+    }
+
+    const written: Uint8Array[] = [];
+    const usage = await forwardStreamAndExtractUsage(
+      gen(), (c) => written.push(c),
+      "test input prompt", undefined, undefined, "gpt-4o",
+      mockRes(),
+    );
+
+    const allOutput = written.map((c) => new TextDecoder().decode(c)).join("");
+
+    // response.completed forwarded
+    expect(allOutput).toContain("response.completed");
+    // Usage patched into the response.completed payload
+    expect(allOutput).toContain('"input_tokens"');
+    expect(allOutput).toContain('"output_tokens"');
+    // Fallback counted tokens
+    expect(usage.input_tokens).toBeGreaterThan(0);
+  });
+
+  it("forwardStream (responses): does NOT patch usage when provider already returned it", async () => {
+    const enc = new TextEncoder();
+    async function* gen(): AsyncGenerator<Uint8Array> {
+      yield enc.encode('event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"Hi there"}\n\n');
+      yield enc.encode('event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[],"usage":{"input_tokens":15,"output_tokens":8}}}\n\n');
+    }
+
+    const written: Uint8Array[] = [];
+    const usage = await forwardStreamAndExtractUsage(
+      gen(), (c) => written.push(c),
+      "test input", undefined, undefined, "gpt-4o",
+      mockRes(),
+    );
+
+    const allOutput = written.map((c) => new TextDecoder().decode(c)).join("");
+
+    // Provider usage used directly
+    expect(usage.input_tokens).toBe(15);
+    expect(usage.output_tokens).toBe(8);
+    // input_tokens appears exactly once (the provider's value, forwarded as-is)
+    const matches = allOutput.match(/input_tokens/g) || [];
+    expect(matches.length).toBe(1);
+  });
+
+  // ---- Transform path (extractUsageFromProviderStream): fake usage injection ----
+
+  it("extractUsage: injects fake usage chunk into passThrough when provider omits usage", async () => {
+    const enc = new TextEncoder();
+    async function* gen(): AsyncGenerator<Uint8Array> {
+      // Chat completions chunks WITHOUT usage
+      yield enc.encode('data: {"choices":[{"delta":{"content":"Hello world"}}]}\n\n');
+      yield enc.encode('data: [DONE]\n\n');
+    }
+
+    const passThroughChunks: string[] = [];
+    const usage = await extractUsageFromProviderStream(
+      gen(),
+      async (passThrough) => {
+        const dec = new TextDecoder();
+        for await (const chunk of passThrough) {
+          passThroughChunks.push(dec.decode(chunk));
+        }
+      },
+      "test input prompt", undefined, undefined, "gpt-4o",
+      mockRes(),
+    );
+
+    const allPassThrough = passThroughChunks.join("");
+    // The fake usage chunk should be injected before stream ends
+    expect(allPassThrough).toContain("chatcmpl-usage-fallback");
+    expect(allPassThrough).toContain('"prompt_tokens"');
+    expect(allPassThrough).toContain('"completion_tokens"');
+    // Fallback tokens computed
+    expect(usage.input_tokens).toBeGreaterThan(0);
+    expect(usage.output_tokens).toBeGreaterThan(0);
+  });
+
+  it("extractUsage: does NOT inject fake usage when provider already returned it", async () => {
+    const enc = new TextEncoder();
+    async function* gen(): AsyncGenerator<Uint8Array> {
+      yield enc.encode('data: {"choices":[{"delta":{"content":"Hi there"}}]}\n\n');
+      yield enc.encode('data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}\n\n');
+      yield enc.encode('data: [DONE]\n\n');
+    }
+
+    const passThroughChunks: string[] = [];
+    const usage = await extractUsageFromProviderStream(
+      gen(),
+      async (passThrough) => {
+        const dec = new TextDecoder();
+        for await (const chunk of passThrough) {
+          passThroughChunks.push(dec.decode(chunk));
+        }
+      },
+      "test input", undefined, undefined, "gpt-4o",
+      mockRes(),
+    );
+
+    const allPassThrough = passThroughChunks.join("");
+    // No fake chunk injected
+    expect(allPassThrough).not.toContain("chatcmpl-usage-fallback");
+    // Provider usage used
+    expect(usage.input_tokens).toBe(10);
+    expect(usage.output_tokens).toBe(5);
+  });
 });

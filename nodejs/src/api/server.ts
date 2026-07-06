@@ -469,6 +469,11 @@ export async function forwardStreamAndExtractUsage(
   let donePending = false; // [DONE] intercepted; forwarded after usage injection
   let messageStopPending = false; // Anthropic message_stop intercepted
   let anthropicStopEventSeen = false; // "event: message_stop" seen, awaiting data line
+  // OpenAI Responses: the terminal "response.completed" event carries usage
+  // inside its JSON payload. We hold it so we can patch usage in if missing.
+  let responseCompletedPending = false; // response.completed data intercepted
+  let responseCompletedEventSeen = false; // "event: response.completed" seen, awaiting data
+  let responseCompletedData = ""; // raw payload of the held response.completed data line
 
   // --- Client disconnect handling ---
   // When the downstream client closes the connection, proactively terminate
@@ -507,12 +512,23 @@ export async function forwardStreamAndExtractUsage(
         } else if (anthropicStopEventSeen && trimmed.includes('"type":"message_stop"')) {
           messageStopPending = true; // hold message_stop until after usage injection
           anthropicStopEventSeen = false;
+        } else if (trimmed === "event: response.completed") {
+          responseCompletedEventSeen = true; // hold, await matching data line
+        } else if (responseCompletedEventSeen && trimmed.startsWith("data: ") && trimmed.includes('"type":"response.completed"')) {
+          responseCompletedData = trimmed.slice(6); // stash payload for patching
+          responseCompletedPending = true;
+          responseCompletedEventSeen = false;
+          extractUsageFromSSE(trimmed); // capture provider usage if present
         } else {
           if (anthropicStopEventSeen) {
             // Edge case: event line seen but next line wasn't the matching data.
             // Release the held event line to preserve stream integrity.
             toForward += "event: message_stop\n";
             anthropicStopEventSeen = false;
+          }
+          if (responseCompletedEventSeen) {
+            toForward += "event: response.completed\n";
+            responseCompletedEventSeen = false;
           }
           toForward += line + "\n";
           extractUsageFromSSE(trimmed);
@@ -538,10 +554,21 @@ export async function forwardStreamAndExtractUsage(
           } else if (anthropicStopEventSeen && trimmed.includes('"type":"message_stop"')) {
             messageStopPending = true;
             anthropicStopEventSeen = false;
+          } else if (trimmed === "event: response.completed") {
+            responseCompletedEventSeen = true;
+          } else if (responseCompletedEventSeen && trimmed.startsWith("data: ") && trimmed.includes('"type":"response.completed"')) {
+            responseCompletedData = trimmed.slice(6);
+            responseCompletedPending = true;
+            responseCompletedEventSeen = false;
+            extractUsageFromSSE(trimmed);
           } else {
             if (anthropicStopEventSeen) {
               toForward += "event: message_stop\n";
               anthropicStopEventSeen = false;
+            }
+            if (responseCompletedEventSeen) {
+              toForward += "event: response.completed\n";
+              responseCompletedEventSeen = false;
             }
             toForward += line + "\n";
             extractUsageFromSSE(trimmed);
@@ -596,6 +623,27 @@ export async function forwardStreamAndExtractUsage(
     // Forward the intercepted Anthropic message_stop terminal signal
     if (!clientClosed && messageStopPending) {
       write(encoder.encode('event: message_stop\ndata: {"type":"message_stop"}\n\n'));
+    }
+
+    // OpenAI Responses: patch usage into the held response.completed event.
+    // The terminal event carries usage at response.usage in its JSON payload;
+    // we inject fallback values there if the provider omitted them.
+    if (!clientClosed && responseCompletedPending) {
+      if (!providerReturnedUsage && (inputTokens > 0 || outputTokens > 0)) {
+        try {
+          const parsed = JSON.parse(responseCompletedData);
+          if (parsed.response) {
+            parsed.response.usage = { input_tokens: inputTokens, output_tokens: outputTokens };
+          }
+          write(encoder.encode(`event: response.completed\ndata: ${JSON.stringify(parsed)}\n\n`));
+        } catch {
+          // JSON parse failed — forward the original payload unchanged
+          write(encoder.encode(`event: response.completed\ndata: ${responseCompletedData}\n\n`));
+        }
+      } else {
+        // Provider already returned usage, or no tokens to inject — forward as-is
+        write(encoder.encode(`event: response.completed\ndata: ${responseCompletedData}\n\n`));
+      }
     }
   } catch (err) {
     // If the client disconnected, upstream AbortErrors are expected — swallow them.
@@ -671,6 +719,9 @@ export async function extractUsageFromProviderStream(
   let decoderFlushed = false;
   let streamDone = false;
   let cancelled = false;
+  let providerReturnedUsage = false; // provider included usage in SSE
+  let usageInjected = false; // fake usage chunk already injected into passThrough
+  const fallbackEncoder = new TextEncoder();
   const providerIterator = providerStream[Symbol.asyncIterator]();
 
   function parseChunk(chunk: Uint8Array): void {
@@ -700,6 +751,7 @@ export async function extractUsageFromProviderStream(
       const parsed = JSON.parse(payload);
       const usage = parsed.usage ?? parsed.response?.usage ?? parsed.message?.usage;
       if (usage) {
+        providerReturnedUsage = true;
         if (usage.prompt_tokens) inputTokens = usage.prompt_tokens;
         if (usage.completion_tokens) outputTokens = usage.completion_tokens;
         if (!inputTokens && usage.input_tokens) inputTokens = usage.input_tokens;
@@ -746,6 +798,33 @@ export async function extractUsageFromProviderStream(
           if (result.done) {
             streamDone = true;
             flushDecoder();
+            // If the provider omitted usage, compute fallback tokens now and
+            // inject a synthetic chat-completions usage chunk into the stream.
+            // The downstream transform (streamResponsesApi / streamAnthropicApi)
+            // will read this and embed the usage into its terminal event, so
+            // the client receives accurate usage even for providers that omit it.
+            if (!providerReturnedUsage && !usageInjected && !cancelled) {
+              usageInjected = true;
+              if (!outputTokens && outputText) {
+                outputTokens = await countTokensAccurate(providerType ?? "", outputText, providerConfig, modelName);
+              }
+              if (!inputTokens && inputText) {
+                inputTokens = await countTokensAccurate(providerType ?? "", inputText, providerConfig, modelName);
+              }
+              if (inputTokens > 0 || outputTokens > 0) {
+                const fakeChunk = `data: ${JSON.stringify({
+                  id: "chatcmpl-usage-fallback",
+                  object: "chat.completion.chunk",
+                  choices: [],
+                  usage: {
+                    prompt_tokens: inputTokens,
+                    completion_tokens: outputTokens,
+                    total_tokens: inputTokens + outputTokens,
+                  },
+                })}\n\n`;
+                return { value: fallbackEncoder.encode(fakeChunk), done: false };
+              }
+            }
             return { value: undefined as any, done: true };
           }
           parseChunk(result.value);
