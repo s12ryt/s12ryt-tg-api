@@ -300,8 +300,23 @@ export function extractInputTextFromBody(body: Record<string, any> | undefined):
         parts.push(content);
       } else if (Array.isArray(content)) {
         for (const part of content) {
-          if (part?.type === "text" && typeof part.text === "string") {
+          if (!part) continue;
+          if (part.type === "text" && typeof part.text === "string") {
             parts.push(part.text);
+          } else if (part.type === "tool_result") {
+            // Anthropic tool_result: content can be a string or array of text blocks
+            const trContent = part.content;
+            if (typeof trContent === "string") {
+              parts.push(trContent);
+            } else if (Array.isArray(trContent)) {
+              for (const tp of trContent) {
+                if (tp?.type === "text" && typeof tp.text === "string") parts.push(tp.text);
+              }
+            }
+          } else if (part.type === "tool_use") {
+            // Anthropic tool_use: name + input are part of conversation context
+            if (typeof part.name === "string") parts.push(part.name);
+            if (part.input != null) parts.push(JSON.stringify(part.input));
           }
         }
       }
@@ -334,6 +349,19 @@ export function extractInputTextFromBody(body: Record<string, any> | undefined):
   // Responses API format: instructions (system prompt)
   if (typeof body.instructions === "string") {
     parts.push(body.instructions);
+  }
+
+  // Anthropic Messages API format: system prompt
+  // Can be a string or an array of content blocks [{type: "text", text: "..."}]
+  const system = body.system;
+  if (typeof system === "string") {
+    parts.push(system);
+  } else if (Array.isArray(system)) {
+    for (const part of system) {
+      if (part?.type === "text" && typeof part.text === "string") {
+        parts.push(part.text);
+      }
+    }
   }
 
   // Tool / function definitions — providers count these as input tokens

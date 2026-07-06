@@ -139,6 +139,133 @@ describe("extractInputTextFromBody", () => {
     const toolTokens = tokensWith - tokensWithout;
     expect(toolTokens).toBeGreaterThan(500);
   });
+
+  // ---- Anthropic Messages API: system prompt ----
+
+  it("extracts Anthropic system prompt (string format)", () => {
+    const body = {
+      system: "You are a helpful assistant.",
+      messages: [{ role: "user", content: "Hi" }],
+    };
+    const text = extractInputTextFromBody(body);
+    expect(text).toContain("You are a helpful assistant.");
+    expect(text).toContain("Hi");
+  });
+
+  it("extracts Anthropic system prompt (array format)", () => {
+    const body = {
+      system: [
+        { type: "text", text: "You are a coding expert." },
+        { type: "text", text: "Always use TypeScript." },
+      ],
+      messages: [{ role: "user", content: "Write code" }],
+    };
+    const text = extractInputTextFromBody(body);
+    expect(text).toContain("You are a coding expert.");
+    expect(text).toContain("Always use TypeScript.");
+  });
+
+  // ---- Anthropic: tool_result in message content ----
+
+  it("extracts tool_result with string content", () => {
+    const body = {
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: "t1", content: "The result is 42" },
+          ],
+        },
+      ],
+    };
+    const text = extractInputTextFromBody(body);
+    expect(text).toContain("The result is 42");
+  });
+
+  it("extracts tool_result with array content", () => {
+    const body = {
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "t1",
+              content: [{ type: "text", text: "Multi-part result" }],
+            },
+          ],
+        },
+      ],
+    };
+    const text = extractInputTextFromBody(body);
+    expect(text).toContain("Multi-part result");
+  });
+
+  // ---- Anthropic: tool_use in assistant message ----
+
+  it("extracts tool_use name and input", () => {
+    const body = {
+      messages: [
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "tool_use",
+              id: "t1",
+              name: "get_weather",
+              input: { city: "Tokyo", unit: "celsius" },
+            },
+          ],
+        },
+      ],
+    };
+    const text = extractInputTextFromBody(body);
+    expect(text).toContain("get_weather");
+    expect(text).toContain("Tokyo");
+    expect(text).toContain("celsius");
+  });
+
+  it("Anthropic agentic conversation: system + tools + tool_use + tool_result", () => {
+    // Simulate a full multi-turn agentic conversation
+    const body = {
+      system: "You are a research assistant with access to tools.",
+      tools: [
+        {
+          name: "search",
+          description: "Search the web",
+          input_schema: { type: "object", properties: { query: { type: "string" } } },
+        },
+      ],
+      messages: [
+        { role: "user", content: "Find info about quantum computing" },
+        {
+          role: "assistant",
+          content: [
+            { type: "text", text: "Let me search for that." },
+            { type: "tool_use", id: "t1", name: "search", input: { query: "quantum computing basics" } },
+          ],
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "t1",
+              content: "Quantum computing uses quantum bits (qubits) to perform computations.",
+            },
+          ],
+        },
+      ],
+    };
+    const text = extractInputTextFromBody(body);
+
+    // All parts should be present
+    expect(text).toContain("research assistant");
+    expect(text).toContain("search");
+    expect(text).toContain("quantum computing basics");
+    expect(text).toContain("qubits");
+    expect(text).toContain("Find info about quantum computing");
+  });
 });
 
 // ---------------------------------------------------------------------------
