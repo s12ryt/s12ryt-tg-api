@@ -948,4 +948,61 @@ describe("TestStreamClientDisconnect", () => {
     expect(returnCalled).toBe(true);
     expect(yieldCount).toBeLessThan(TOTAL);
   });
+
+  // ---- Usage chunk injection (provider omits usage) ----
+
+  it("forwardStream: injects synthetic usage before [DONE] when provider omits usage", async () => {
+    const enc = new TextEncoder();
+    async function* gen(): AsyncGenerator<Uint8Array> {
+      yield enc.encode('data: {"choices":[{"delta":{"content":"Hello world output"}}]}\n\n');
+      yield enc.encode('data: [DONE]\n\n');
+    }
+
+    const written: Uint8Array[] = [];
+    const usage = await forwardStreamAndExtractUsage(
+      gen(), (c) => written.push(c),
+      "test input text", undefined, undefined, "test-model",
+      mockRes(),
+    );
+
+    const allOutput = written.map((c) => new TextDecoder().decode(c)).join("");
+
+    // Original content forwarded
+    expect(allOutput).toContain("Hello world output");
+    // [DONE] forwarded
+    expect(allOutput).toContain("[DONE]");
+    // Synthetic usage chunk injected (provider didn't return one)
+    expect(allOutput).toContain("prompt_tokens");
+    expect(allOutput).toContain("completion_tokens");
+    // Usage appears BEFORE [DONE]
+    expect(allOutput.indexOf("prompt_tokens")).toBeLessThan(allOutput.indexOf("[DONE]"));
+    // Usage values are non-zero (estimated from fallback)
+    expect(usage.input_tokens).toBeGreaterThan(0);
+    expect(usage.output_tokens).toBeGreaterThan(0);
+  });
+
+  it("forwardStream: does NOT inject usage when provider already returned it", async () => {
+    const enc = new TextEncoder();
+    async function* gen(): AsyncGenerator<Uint8Array> {
+      yield enc.encode('data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n');
+      yield enc.encode('data: {"usage":{"prompt_tokens":10,"completion_tokens":5}}\n\n');
+      yield enc.encode('data: [DONE]\n\n');
+    }
+
+    const written: Uint8Array[] = [];
+    const usage = await forwardStreamAndExtractUsage(
+      gen(), (c) => written.push(c),
+      "Hi", undefined, undefined, "test-model",
+      mockRes(),
+    );
+
+    const allOutput = written.map((c) => new TextDecoder().decode(c)).join("");
+
+    // Provider returned usage — values used directly
+    expect(usage.input_tokens).toBe(10);
+    expect(usage.output_tokens).toBe(5);
+    // Only ONE usage chunk (the provider's), no synthetic injection
+    const promptTokenMatches = allOutput.match(/prompt_tokens/g) || [];
+    expect(promptTokenMatches.length).toBe(1);
+  });
 });

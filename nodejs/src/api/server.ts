@@ -460,10 +460,13 @@ export async function forwardStreamAndExtractUsage(
   res?: Response,
 ): Promise<{ input_tokens: number; output_tokens: number }> {
   const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
   let inputTokens = 0;
   let outputTokens = 0;
   let sseBuffer = "";
   let outputText = "";
+  let providerReturnedUsage = false;
+  let donePending = false; // [DONE] intercepted; forwarded after usage injection
 
   // --- Client disconnect handling ---
   // When the downstream client closes the connection, proactively terminate
@@ -483,16 +486,23 @@ export async function forwardStreamAndExtractUsage(
     let result = await iterator.next();
     while (!result.done) {
       const chunk = result.value;
-      write(chunk);
-
-      // Accumulate across TCP chunk boundaries to avoid losing split SSE lines
       sseBuffer += decoder.decode(chunk, { stream: true });
       const lines = sseBuffer.split("\n");
       sseBuffer = lines.pop() ?? ""; // keep incomplete trailing line
 
+      // Forward lines as-is, but intercept [DONE] so we can inject a usage
+      // chunk before the terminal signal. This is transparent for non-[DONE]
+      // lines — each line is re-emitted with its original trailing newline.
+      let toForward = "";
       for (const line of lines) {
-        extractUsageFromSSE(line.trim());
+        if (line.trim() === "data: [DONE]") {
+          donePending = true; // hold [DONE] until after usage injection
+        } else {
+          toForward += line + "\n";
+          extractUsageFromSSE(line.trim());
+        }
       }
+      if (toForward) write(encoder.encode(toForward));
 
       if (clientClosed) break; // stop consuming once client is gone
       result = await iterator.next();
@@ -501,14 +511,49 @@ export async function forwardStreamAndExtractUsage(
     // Flush decoder + remaining buffer (skip if client disconnected mid-stream)
     if (!clientClosed) {
       sseBuffer += decoder.decode();
-      for (const line of sseBuffer.split("\n")) {
-        extractUsageFromSSE(line.trim());
+      if (sseBuffer) {
+        let toForward = "";
+        for (const line of sseBuffer.split("\n")) {
+          if (line.trim() === "data: [DONE]") {
+            donePending = true;
+          } else {
+            toForward += line + "\n";
+            extractUsageFromSSE(line.trim());
+          }
+        }
+        if (toForward) write(encoder.encode(toForward));
+        sseBuffer = "";
       }
     }
 
     // Fallback: count tokens accurately when provider returns no usage
     if (!outputTokens && outputText) outputTokens = await countTokensAccurate(providerType ?? "", outputText, providerConfig, modelName);
     if (!inputTokens && inputText) inputTokens = await countTokensAccurate(providerType ?? "", inputText, providerConfig, modelName);
+
+    // Inject synthetic usage chunk if the provider didn't return one.
+    // [DONE] only exists in OpenAI chat completions format, so donePending
+    // effectively gates this to that path. We emit the usage chunk before
+    // forwarding the intercepted [DONE] so the client receives it in order.
+    if (!clientClosed && donePending && !providerReturnedUsage && (inputTokens > 0 || outputTokens > 0)) {
+      const usageChunk = `data: ${JSON.stringify({
+        id: `chatcmpl-usage-${Date.now()}`,
+        object: "chat.completion.chunk",
+        created: Math.floor(Date.now() / 1000),
+        model: modelName ?? "",
+        choices: [],
+        usage: {
+          prompt_tokens: inputTokens,
+          completion_tokens: outputTokens,
+          total_tokens: inputTokens + outputTokens,
+        },
+      })}\n\n`;
+      write(encoder.encode(usageChunk));
+    }
+
+    // Forward the intercepted [DONE] terminal signal
+    if (!clientClosed && donePending) {
+      write(encoder.encode("data: [DONE]\n\n"));
+    }
   } catch (err) {
     // If the client disconnected, upstream AbortErrors are expected — swallow them.
     if (!clientClosed) throw err;
@@ -533,6 +578,7 @@ export async function forwardStreamAndExtractUsage(
       // or Anthropic message_start usage (parsed.message.usage)
       const usage = parsed.usage ?? parsed.response?.usage ?? parsed.message?.usage;
       if (usage) {
+        providerReturnedUsage = true;
         if (usage.prompt_tokens) inputTokens = usage.prompt_tokens;
         if (usage.completion_tokens) outputTokens = usage.completion_tokens;
         if (!inputTokens && usage.input_tokens) inputTokens = usage.input_tokens;
