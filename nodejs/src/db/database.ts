@@ -100,6 +100,7 @@ export async function initDbAsync(databasePath: string, databaseUrl?: string): P
 
   await rebuildProviderCache();
   startUsageFlushTimer();
+  await startKeepaliveTimer();
 
   return db;
 }
@@ -414,7 +415,7 @@ function createTables(db: SqlJsDatabase): void {
  */
 async function runMigrations(d: DbDriver): Promise<void> {
   await d.exec(
-    "CREATE TABLE IF NOT EXISTS schema_migrations (id TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
+    "CREATE TABLE IF NOT EXISTS schema_migrations (id VARCHAR(255) PRIMARY KEY, applied_at TEXT NOT NULL)"
   );
   const applied = await d.query<{ id: string }>("SELECT id FROM schema_migrations");
   if (applied.rows.some((r) => r.id === "001_base_schema")) return;
@@ -460,6 +461,7 @@ export async function closeDb(): Promise<void> {
   }
   if (usageFlushTimer) {
     clearInterval(usageFlushTimer);
+    stopKeepaliveTimer();
     usageFlushTimer = null;
   }
   if (driver) {
@@ -822,6 +824,64 @@ function startUsageFlushTimer(): void {
 /**
  * Flush all pending usage records to DB atomically.
  */
+
+/**
+ * Cloud database keepalive ??prevents idle cloud databases (e.g. Supabase
+ * free-tier) from sleeping by periodically writing and deleting a throwaway
+ * row. Only active for PostgreSQL / MySQL; SQLite returns immediately.
+ *
+ * Settings (in the `settings` table):
+ *   keepalive_enabled   ??"1" to enable, absent/other to disable
+ *   keepalive_interval  ??minutes between pings (default 5, min 1)
+ */
+let keepaliveTimer: ReturnType<typeof setInterval> | null = null;
+
+/** Write+delete a throwaway row to keep the cloud DB connection active. */
+async function keepalivePing(): Promise<void> {
+  const d = drv();
+  if (d.dialect === "sqlite") return;
+  try {
+    if (d.dialect === "postgres") {
+      await d.exec("CREATE TABLE IF NOT EXISTS _db_keepalive (id SERIAL PRIMARY KEY, pinged_at TEXT NOT NULL)");
+    } else {
+      await d.exec("CREATE TABLE IF NOT EXISTS _db_keepalive (id INTEGER AUTO_INCREMENT PRIMARY KEY, pinged_at TEXT NOT NULL) ENGINE=InnoDB");
+    }
+    await d.run("DELETE FROM _db_keepalive");
+    await d.run(`INSERT INTO _db_keepalive (pinged_at) VALUES (${NOW[d.dialect]})`);
+  } catch (err) {
+    console.error("[keepalive] ping failed:", err);
+  }
+}
+
+function stopKeepaliveTimer(): void {
+  if (keepaliveTimer) {
+    clearInterval(keepaliveTimer);
+    keepaliveTimer = null;
+  }
+}
+
+/** Read keepalive settings and start the timer if enabled (cloud DB only). */
+async function startKeepaliveTimer(): Promise<void> {
+  stopKeepaliveTimer();
+  const d = drv();
+  if (d.dialect === "sqlite") return;
+  const enabled = await getSetting("keepalive_enabled");
+  if (enabled !== "1") return;
+  const intervalMinutes = Math.max(1, Number(await getSetting("keepalive_interval")) || 5);
+  void keepalivePing();
+  keepaliveTimer = setInterval(() => void keepalivePing(), intervalMinutes * 60_000);
+}
+
+/** Restart the keepalive timer after settings change (called from web routes). */
+export async function restartKeepaliveTimer(): Promise<void> {
+  await startKeepaliveTimer();
+}
+
+/** Whether the active driver is a cloud backend (PG/MySQL). */
+export function isCloudDatabase(): boolean {
+  if (!driver) return false;
+  return driver.dialect !== "sqlite";
+}
 export async function flushUsageQueue(): Promise<void> {
   if (usageQueue.length === 0) return;
 

@@ -2861,7 +2861,18 @@
             <label>全域 Provider User-Agent</label>
             <input type="text" id="sys-provider-ua" value="${esc(settings.provider_default_user_agent || "")}" placeholder="留空使用 runtime 預設">
           </div>
-          <button class="btn btn-primary" id="btn-save-settings">儲存設定</button>
+                    ${settings.is_cloud_db ? `
+          <div class="form-group">
+            <label>?脩垢?豢?摨恍?瑞?</label>
+            <div style="display:flex;align-items:center;gap:8px;">
+              <input type="checkbox" id="sys-keepalive-enabled" ${settings.keepalive_enabled ? "checked" : ""}>
+              <span>?摰?敹歲嚗神??+ ?芷?⊥?蝢拇???脫迫?脩垢 DB 隡?嚗?/span>
+            </div>
+            <input type="number" id="sys-keepalive-interval" value="${settings.keepalive_interval || 5}" min="1" max="1440" style="margin-top:8px;width:120px;">
+            <span style="margin-top:4px;display:block;font-size:12px;opacity:0.7;">敹歲??嚗????身 5嚗?撠?1嚗?/span>
+          </div>
+          ` : ""}
+<button class="btn btn-primary" id="btn-save-settings">儲存設定</button>
         </div>
 
         <div class="card" style="margin-top:16px;">
@@ -2909,6 +2920,8 @@
             await API.put("/web/api/admin/settings", {
               api_url: $("#sys-api-url").value.trim(),
               provider_default_user_agent: $("#sys-provider-ua").value.trim(),
+              keepalive_enabled: $("#sys-keepalive-enabled") ? $("#sys-keepalive-enabled").checked : undefined,
+              keepalive_interval: $("#sys-keepalive-interval") ? Number($("#sys-keepalive-interval").value) : undefined,
             });
             toast("設定已儲存", "success");
           } catch (err) {

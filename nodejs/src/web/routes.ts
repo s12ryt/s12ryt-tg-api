@@ -107,6 +107,7 @@ import {
   getAllCachedModelNames,
   // model mappings
   getModelMappings, replaceModelMappings,
+  restartKeepaliveTimer, isCloudDatabase,
 } from "../db/database.js";
 
 // ---------------------------------------------------------------------------
@@ -1255,17 +1256,22 @@ router.get("/api/admin/usage", async (req: Request, res: Response) => {
 /** GET /web/api/admin/settings — 系統設定 */
 router.get("/api/admin/settings", async (_req: Request, res: Response) => {
   const apiUrl = (await getSetting("api_url")) ?? config.DEFAULT_API_URL;
+  const kaEnabled = (await getSetting("keepalive_enabled")) === "1";
+  const kaInterval = Number(await getSetting("keepalive_interval")) || 5;
   res.json({
     settings: {
       api_url: apiUrl,
       provider_default_user_agent: await getProviderDefaultUserAgent(),
+      is_cloud_db: isCloudDatabase(),
+      keepalive_enabled: kaEnabled,
+      keepalive_interval: kaInterval,
     },
   });
 });
 
 /** PUT /web/api/admin/settings — 更新系統設定 */
 router.put("/api/admin/settings", async (req: Request, res: Response) => {
-  const { api_url, provider_default_user_agent } = req.body;
+  const { api_url, provider_default_user_agent, keepalive_enabled, keepalive_interval } = req.body;
 
   if (api_url !== undefined) {
     await setSetting("api_url", String(api_url).replace(/\/+$/, ""));
@@ -1278,6 +1284,20 @@ router.put("/api/admin/settings", async (req: Request, res: Response) => {
       return;
     }
     await setSetting(PROVIDER_DEFAULT_USER_AGENT_SETTING, sanitizedUserAgent.value);
+  }
+
+  let kaChanged = false;
+  if (keepalive_enabled !== undefined) {
+    await setSetting("keepalive_enabled", keepalive_enabled ? "1" : "0");
+    kaChanged = true;
+  }
+  if (keepalive_interval !== undefined) {
+    const kaMin = Math.max(1, Math.floor(Number(keepalive_interval)) || 5);
+    await setSetting("keepalive_interval", String(kaMin));
+    kaChanged = true;
+  }
+  if (kaChanged) {
+    await restartKeepaliveTimer();
   }
 
   res.json({ ok: true });
