@@ -124,12 +124,12 @@ export class MysqlDriver implements DbDriver {
     // Dynamic import keeps `mysql2` optional for SQLite-only deployments.
     // multipleStatements stays false (default) — exec() splits statements itself.
     const mysqlModule = (await import("mysql2/promise")) as {
-      createPool: (config: {
-        connectionString: string;
-        multipleStatements?: boolean;
-      }) => MysqlPool;
+      // mysql2 createPool accepts a URI string directly; the object form
+      // { connectionString } is silently ignored (only { uri } or a bare
+      // string works). multipleStatements stays false (default).
+      createPool: (config: string | object) => MysqlPool;
     };
-    this.pool = mysqlModule.createPool({ connectionString });
+    this.pool = mysqlModule.createPool(connectionString);
   }
 
   /** Ensure the pool is open and return it, or throw a contract error. */
