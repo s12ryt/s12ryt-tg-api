@@ -12,6 +12,7 @@ import { existsSync } from "fs";
 import { Tunnel, bin, install } from "cloudflared";
 
 let tunnelInstance: Tunnel | null = null;
+let currentTunnelUrl: string | null = null;
 
 /**
  * Start a Cloudflare Tunnel for the given local port.
@@ -42,6 +43,7 @@ export async function startTunnel(port: number): Promise<void> {
   }
 
   tunnelInstance.on("url", (url: string) => {
+    currentTunnelUrl = url;
     console.log(`[tunnel] ▶ Public URL: ${url}`);
     console.log(`[tunnel]   API:    ${url}/v1/*`);
     console.log(`[tunnel]   Web:    ${url}/web/`);
@@ -62,6 +64,7 @@ export async function startTunnel(port: number): Promise<void> {
   tunnelInstance.on("exit", (code: number | null) => {
     console.log(`[tunnel] Process exited (code ${code})`);
     tunnelInstance = null;
+    currentTunnelUrl = null;
   });
 
   console.log(`[tunnel] Starting Cloudflare Tunnel (mode: ${mode}) → localhost:${port}`);
@@ -74,5 +77,18 @@ export function stopTunnel(): void {
   if (tunnelInstance) {
     tunnelInstance.stop();
     tunnelInstance = null;
+    currentTunnelUrl = null;
   }
+}
+
+/**
+ * Return the current Cloudflare Tunnel public URL, or null if no tunnel is
+ * active (or the URL has not been assigned yet — quick tunnels assign the
+ * URL asynchronously after connecting).
+ *
+ * This is used as a fallback for the "effective API URL" when the admin has
+ * not manually overridden api_url via /sub_url or Web Console settings.
+ */
+export function getTunnelUrl(): string | null {
+  return currentTunnelUrl;
 }
