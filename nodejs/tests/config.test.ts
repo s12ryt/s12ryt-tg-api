@@ -25,28 +25,28 @@ describe("Config", () => {
     delete process.env.DEFAULT_API_URL;
     delete process.env.memory;
     delete process.env.MAX_OLD_SPACE;
+    delete process.env.WEB_AUTH_MODE;
+    delete process.env.LOGIN_WEB_PATH;
   });
 
   afterEach(() => {
     vi.resetModules();
   });
 
-  it("should throw if BOT_TOKEN is missing", async () => {
+  it("should default BOT_TOKEN to empty string when not set", async () => {
     // Only set ADMIN_ID, not BOT_TOKEN
     process.env.ADMIN_ID = "123456";
 
-    await expect(import("../src/config.js")).rejects.toThrow(
-      "Missing required environment variable: BOT_TOKEN"
-    );
+    const { config } = await import("../src/config.js");
+    expect(config.BOT_TOKEN).toBe("");
   });
 
-  it("should throw if ADMIN_ID is missing", async () => {
+  it("should default ADMIN_ID to null when not set", async () => {
     // Only set BOT_TOKEN, not ADMIN_ID
     process.env.BOT_TOKEN = "test-token-123";
 
-    await expect(import("../src/config.js")).rejects.toThrow(
-      "Missing required environment variable: ADMIN_ID"
-    );
+    const { config } = await import("../src/config.js");
+    expect(config.ADMIN_ID).toBeNull();
   });
 
   it("should create config with required and default values", async () => {
@@ -61,6 +61,8 @@ describe("Config", () => {
     expect(config.DATABASE_PATH).toBe("./data/bot.db");
     expect(config.DEFAULT_API_URL).toBe("http://localhost:8000");
     expect(config.MEMORY_LIMIT_MB).toBeNull();
+    expect(config.WEB_AUTH_MODE).toBe("telegram");
+    expect(config.LOGIN_WEB_PATH).toBe("");
   });
 
   it("should use custom API_PORT from env", async () => {
@@ -132,5 +134,52 @@ describe("Config", () => {
     const { config } = await import("../src/config.js");
 
     expect(config.MEMORY_LIMIT_MB).toBeNull();
+  });
+
+  it("should accept WEB_AUTH_MODE=password", async () => {
+    process.env.BOT_TOKEN = "tok";
+    process.env.ADMIN_ID = "1";
+    process.env.WEB_AUTH_MODE = "password";
+
+    const { config } = await import("../src/config.js");
+    expect(config.WEB_AUTH_MODE).toBe("password");
+  });
+
+  it("should accept WEB_AUTH_MODE case-insensitively", async () => {
+    process.env.BOT_TOKEN = "tok";
+    process.env.ADMIN_ID = "1";
+    process.env.WEB_AUTH_MODE = "PASSWORD";
+
+    const { config } = await import("../src/config.js");
+    expect(config.WEB_AUTH_MODE).toBe("password");
+  });
+
+  it("should throw on invalid WEB_AUTH_MODE", async () => {
+    process.env.BOT_TOKEN = "tok";
+    process.env.ADMIN_ID = "1";
+    process.env.WEB_AUTH_MODE = "invalid";
+
+    await expect(import("../src/config.js")).rejects.toThrow(
+      "Invalid WEB_AUTH_MODE"
+    );
+  });
+
+  it("should normalize LOGIN_WEB_PATH with leading and trailing slashes", async () => {
+    process.env.BOT_TOKEN = "tok";
+    process.env.ADMIN_ID = "1";
+    process.env.LOGIN_WEB_PATH = "///secret///";
+
+    const { config } = await import("../src/config.js");
+    expect(config.LOGIN_WEB_PATH).toBe("/secret");
+  });
+
+  it("should reject LOGIN_WEB_PATH=/web (reserved)", async () => {
+    process.env.BOT_TOKEN = "tok";
+    process.env.ADMIN_ID = "1";
+    process.env.LOGIN_WEB_PATH = "/web";
+
+    await expect(import("../src/config.js")).rejects.toThrow(
+      'must not be "/web"'
+    );
   });
 });

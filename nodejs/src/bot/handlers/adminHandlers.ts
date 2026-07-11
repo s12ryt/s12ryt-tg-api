@@ -1164,7 +1164,7 @@ async function adminUserConversation(
 
     if (choice === "2") {
       // ── 停用用戶 ──
-      const users = await getUsers(config.ADMIN_ID);
+      const users = await getUsers(config.ADMIN_ID ?? undefined);
       if (users.length === 0) {
         await ctx.reply("📭 沒有可停用的使用者（排除管理員）。");
         continue;
@@ -1201,7 +1201,7 @@ async function adminUserConversation(
 
     if (choice === "3") {
       // ── 刪除用戶 ──
-      const users = await getUsers(config.ADMIN_ID);
+      const users = await getUsers(config.ADMIN_ID ?? undefined);
       if (users.length === 0) {
         await ctx.reply("📭 沒有可刪除的使用者（排除管理員）。");
         continue;

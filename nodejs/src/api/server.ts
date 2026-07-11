@@ -28,11 +28,13 @@ import {
   convertChatCompletionToAnthropic,
   streamAnthropicApi,
 } from "./anthropic_out.js";
-import { getProviders, getSetting, lookupModelCached, rebuildProviderCache, onProviderCacheRebuild, getAllCachedModelNames, type Provider, getActiveCodingForApiKey, incrementCodingSessionStats, checkModelAllowed, getAllowedModels, getUserByTgId } from "../db/database.js";
+import { getProviders, getSetting, setSetting, lookupModelCached, rebuildProviderCache, onProviderCacheRebuild, getAllCachedModelNames, type Provider, getActiveCodingForApiKey, incrementCodingSessionStats, checkModelAllowed, getAllowedModels, getUserByTgId } from "../db/database.js";
 import { config } from "../config.js";
 import { preprocessThinking, parseModelThinkingSuffix } from "./thinkingParser.js";
 import { addApiLog, type ApiLogEntry } from "./apiLogStore.js";
 import webRouter from "../web/routes.js";
+import { getSessionInfo } from "../web/auth.js";
+import { getOrCreateWebPanelUuid } from "../web/panelUuid.js";
 import { bindPluginApp, getPluginRootRouter } from "../plugins/index.js";
 
 // ---------------------------------------------------------------------------
@@ -54,7 +56,62 @@ app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: "10mb" }));
 
 // Web panel — mounted before API auth/rate/quota middleware so /web/* is exempt
-app.use("/web", express.static(path.join(process.cwd(), "web")));
+const webStaticRoot = path.join(process.cwd(), "web");
+
+/** 從 Cookie header 解析 web_session token */
+function parseSessionCookie(cookieHeader?: string): string | null {
+  if (!cookieHeader) return null;
+  const match = cookieHeader.match(/web_session=([^;]+)/);
+  return match ? match[1] : null;
+}
+
+// LOGIN_WEB_PATH: 自定義登入路徑（防爬蟲別名）
+// 設定後 /web 的 HTML 入口返回 404，前端改由 LOGIN_WEB_PATH 登入 → /{uuid}/web 進入
+if (config.LOGIN_WEB_PATH) {
+  // 攔截 /web 的 HTML 入口（/, /index.html），放行 API 路由和靜態資源
+  app.use("/web", (req, res, next) => {
+    if (req.path === "/" || req.path === "/index.html") {
+      res.status(404).send("Not Found");
+      return;
+    }
+    next();
+  });
+
+  // LOGIN_WEB_PATH — 公開登入入口
+  app.get(config.LOGIN_WEB_PATH, (_req, res) => {
+    res.sendFile(path.join(webStaticRoot, "index.html"));
+  });
+
+  // /{uuid}/web — 認證應用入口（需要有效 session cookie，否則 403）
+  app.use(async (req, res, next) => {
+    try {
+      // 快速短路：只處理 GET，且路徑以 /web 結尾但不是 /web 或 /web/...
+      if (req.method !== "GET") return next();
+      if (!req.path.endsWith("/web")) return next();
+      if (req.path === "/web" || req.path.startsWith("/web/")) return next();
+
+      // 可能是 /{uuid}/web，驗證 UUID
+      const uuid = await getOrCreateWebPanelUuid();
+      if (req.path !== `/${uuid}/web`) return next();
+
+      // 驗證 session cookie
+      const sessionToken = parseSessionCookie(req.headers.cookie);
+      if (!sessionToken || !getSessionInfo(sessionToken)) {
+        // 返回 403 + meta refresh 讓瀏覽器自動跳轉到登入頁（爬蟲看到 403）
+        res.status(403).send(
+          `<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0;url=${config.LOGIN_WEB_PATH}">` +
+          `</head><body>Forbidden — redirecting to login...</body></html>`,
+        );
+        return;
+      }
+      res.sendFile(path.join(webStaticRoot, "index.html"));
+    } catch (err) {
+      next(err);
+    }
+  });
+}
+
+app.use("/web", express.static(webStaticRoot));
 app.use("/web", webRouter);
 
 app.use(authMiddleware);

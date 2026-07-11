@@ -68,6 +68,15 @@ CREATE TABLE users (
   monthly_cost_override DOUBLE,
   UNIQUE(tg_user_id)
 ) ENGINE=InnoDB;
+CREATE TABLE web_users (
+  id INTEGER AUTO_INCREMENT PRIMARY KEY,
+  username VARCHAR(255) NOT NULL,
+  password_hash TEXT NOT NULL,
+  is_admin INTEGER NOT NULL DEFAULT 0,
+  is_active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  UNIQUE(username)
+) ENGINE=InnoDB;
 CREATE TABLE api_keys (
   id INTEGER AUTO_INCREMENT PRIMARY KEY,
   user_id INTEGER NOT NULL,

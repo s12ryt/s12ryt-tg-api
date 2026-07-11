@@ -136,6 +136,17 @@ function createTables(db: SqlJsDatabase): void {
   `);
 
   db.run(`
+    CREATE TABLE IF NOT EXISTS web_users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      is_admin INTEGER NOT NULL DEFAULT 0,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+
+  db.run(`
     CREATE TABLE IF NOT EXISTS api_keys (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL,
@@ -1052,6 +1063,107 @@ export async function deleteUser(id: number): Promise<void> {
 
 export async function updateUserTgId(oldTgUserId: number, newTgUserId: number): Promise<void> {
   await runSql("UPDATE users SET tg_user_id = ? WHERE tg_user_id = ?", [newTgUserId, oldTgUserId]);
+}
+
+// ========================
+// Web Users CRUD (password-based standalone auth)
+// ========================
+
+/**
+ * 虛擬 tg_user_id 偏移量。password 模式下的 web_users 在 users 表中建立
+ * 對應記錄（virtual_tg_id = WEB_USER_TG_ID_OFFSET + web_user_id），
+ * 讓所有基於 tgUserId 的下游路由（keys/usage/coding/limits）不需改動。
+ *
+ * Telegram user ID 目前上限約 8 位數，90 億偏移量確保永不衝突。
+ */
+export const WEB_USER_TG_ID_OFFSET = 9_000_000_000;
+
+export interface WebUser {
+  id: number;
+  username: string;
+  password_hash: string;
+  is_admin: number;
+  is_active: number;
+  created_at: string;
+}
+
+export async function addWebUser(
+  username: string,
+  passwordHash: string,
+  isAdmin: number = 0,
+): Promise<number> {
+  // 使用事務確保 users 虛擬記錄和 web_users 記錄原子性：
+  // 若 web_users INSERT 因 UNIQUE(username) 失敗，users 表的變更也會回滾。
+  return drv().transaction(async () => {
+    // 先在 users 表建立虛擬記錄，取得 id 作為 web_user_id 的映射基礎
+    const virtualTgId = Date.now(); // 暫時用時間戳確保唯一
+    await runSql(
+      `INSERT INTO users (tg_user_id, username, created_at) VALUES (?, ?, ${nowExpr()})`,
+      [virtualTgId, username],
+    );
+    const user = await getUserByTgId(virtualTgId);
+    const realVirtualTgId = WEB_USER_TG_ID_OFFSET + user!.id;
+
+    // 更新為最終的虛擬 tg_user_id
+    await runSql("UPDATE users SET tg_user_id = ? WHERE id = ?", [
+      realVirtualTgId,
+      user!.id,
+    ]);
+
+    await runSql(
+      `INSERT INTO web_users (username, password_hash, is_admin, created_at) VALUES (?, ?, ?, ${nowExpr()})`,
+      [username, passwordHash, isAdmin],
+    );
+
+    return realVirtualTgId;
+  });
+}
+
+export async function getWebUserByUsername(username: string): Promise<WebUser | undefined> {
+  return (await queryOne("SELECT * FROM web_users WHERE username = ?", [
+    username,
+  ])) as unknown as WebUser | undefined;
+}
+
+export async function getWebUserById(id: number): Promise<WebUser | undefined> {
+  return (await queryOne("SELECT * FROM web_users WHERE id = ?", [
+    id,
+  ])) as unknown as WebUser | undefined;
+}
+
+export async function getWebUsers(): Promise<WebUser[]> {
+  return (await queryAll(
+    "SELECT id, username, is_admin, is_active, created_at FROM web_users ORDER BY id",
+  )) as unknown as WebUser[];
+}
+
+export async function getWebUserCount(): Promise<number> {
+  const row = (await queryOne("SELECT COUNT(*) as cnt FROM web_users")) as
+    | { cnt: number }
+    | undefined;
+  return row?.cnt ?? 0;
+}
+
+export async function updateWebUserStatus(id: number, isActive: number): Promise<void> {
+  await runSql("UPDATE web_users SET is_active = ? WHERE id = ?", [isActive, id]);
+}
+
+export async function updateWebUserPassword(id: number, passwordHash: string): Promise<void> {
+  await runSql("UPDATE web_users SET password_hash = ? WHERE id = ?", [passwordHash, id]);
+}
+
+export async function deleteWebUser(id: number): Promise<void> {
+  // 同步刪除 users 表中的虛擬記錄
+  const webUser = await getWebUserById(id);
+  if (webUser) {
+    const username = webUser.username;
+    // 透過 username 查找虛擬 user 記錄並刪除
+    await runSql("DELETE FROM users WHERE username = ? AND tg_user_id >= ?", [
+      username,
+      WEB_USER_TG_ID_OFFSET,
+    ]);
+  }
+  await runSql("DELETE FROM web_users WHERE id = ?", [id]);
 }
 
 // ========================
@@ -2527,4 +2639,10 @@ export async function importDatabase(data: BackupData): Promise<void> {
     }
   }
   await driver!.sync();
+
+  // 清除 panel UUID 快取，確保 restore 後使用新的 DB 值
+  try {
+    const { invalidatePanelUuidCache } = await import("../web/panelUuid.js");
+    invalidatePanelUuidCache();
+  } catch { /* panelUuid 模組可能未載入，忽略 */ }
 }

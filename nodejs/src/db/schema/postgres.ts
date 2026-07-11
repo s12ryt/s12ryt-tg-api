@@ -50,6 +50,15 @@ CREATE TABLE users (
   monthly_cost_override DOUBLE PRECISION
 );
 
+CREATE TABLE web_users (
+  id SERIAL PRIMARY KEY,
+  username TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  is_admin INTEGER NOT NULL DEFAULT 0,
+  is_active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT to_char(NOW(), 'YYYY-MM-DD HH24:MI:SS')
+);
+
 CREATE TABLE api_keys (
   id SERIAL PRIMARY KEY,
   user_id INTEGER NOT NULL,

@@ -55,13 +55,18 @@ import { Router, type Request, type Response } from "express";
 import os from "os";
 import path from "path";
 import fs from "fs";
+import crypto from "crypto";
 import {
   exchangeToken,
+  exchangePasswordCredentials,
   destroySession,
+  destroySessionsByWebUserId,
   webAuthMiddleware,
   requireAdmin,
   startCleanupTimer,
 } from "./auth.js";
+import { hashPassword, verifyPassword, validatePasswordStrength, validateUsername } from "./password.js";
+import { getPanelPath, regenerateWebPanelUuid } from "./panelUuid.js";
 import { config } from "../config.js";
 import { parseApiKeys } from "../api/keySelector.js";
 import {
@@ -88,6 +93,9 @@ import {
   getModelPricesByProvider, batchUpsertModelPrices, cleanupModelPrices,
   // users
   getUsers, addUser, getUserByTgId, getUserById, updateUserStatus, deleteUser, updateUserTgId,
+  // web users (password mode)
+  addWebUser, getWebUserCount, getWebUsers, getWebUserById, getWebUserByUsername,
+  updateWebUserStatus, updateWebUserPassword, deleteWebUser,
   // api keys
   addApiKey, getKeysByUser, deleteApiKey,
   // usage
@@ -115,6 +123,21 @@ import {
 // ---------------------------------------------------------------------------
 
 const router = Router();
+
+// ---------------------------------------------------------------------------
+// Cookie helpers
+// ---------------------------------------------------------------------------
+/** 設定 web_session cookie（僅 LOGIN_WEB_PATH 模式下生效） */
+function setSessionCookie(res: Response, sessionToken: string): void {
+  if (!config.LOGIN_WEB_PATH) return;
+  res.setHeader("Set-Cookie", `web_session=${sessionToken}; HttpOnly; Path=/; Max-Age=86400; SameSite=Lax`);
+}
+
+/** 清除 web_session cookie */
+function clearSessionCookie(res: Response): void {
+  if (!config.LOGIN_WEB_PATH) return;
+  res.setHeader("Set-Cookie", "web_session=; HttpOnly; Path=/; Max-Age=0");
+}
 
 function sanitizeProviderTestUrl(url: string, apiType: string): string {
   if (apiType !== "google") return url;
@@ -394,11 +417,122 @@ function getSystemUsageSnapshot() {
 startCleanupTimer();
 
 // ---------------------------------------------------------------------------
-// Auth routes（公開 — login 不需要 session）
+// Auth routes（公開 — login / config / setup 不需要 session）
 // ---------------------------------------------------------------------------
 
-/** POST /web/api/auth/login — OTP 換 session */
+/**
+ * GET /web/api/auth/config — 前端偵測認證模式（公開）
+ *
+ * 讓前端在載入時知道：
+ *   - authMode: "telegram" | "password"
+ *   - needsSetup: password 模式下是否需要初始化（無 web_user 時）
+ */
+router.get("/api/auth/config", async (_req: Request, res: Response) => {
+  const authMode = config.WEB_AUTH_MODE;
+  let needsSetup = false;
+  if (authMode === "password") {
+    const count = await getWebUserCount();
+    needsSetup = count === 0;
+  }
+  res.json({ authMode, needsSetup, loginPath: config.LOGIN_WEB_PATH || null });
+});
+
+/**
+ * POST /web/api/auth/setup — 首次初始化管理員帳號（公開，僅 password 模式 + 無用戶時可用）
+ *
+ * 建立第一個 is_admin=1 的 web_user。
+ * 之後所有呼叫都會返回 403（已有用戶）或 400（非 password 模式）。
+ */
+router.post("/api/auth/setup", async (req: Request, res: Response) => {
+  if (config.WEB_AUTH_MODE !== "password") {
+    res.status(400).json({ error: "此功能僅在 WEB_AUTH_MODE=password 時可用" });
+    return;
+  }
+
+  // 安全檢查：已有 web_user 時拒絕
+  const existingCount = await getWebUserCount();
+  if (existingCount > 0) {
+    res.status(403).json({ error: "系統已初始化，請使用一般登入" });
+    return;
+  }
+
+  const { username, password } = req.body;
+  if (typeof username !== "string" || typeof password !== "string") {
+    res.status(400).json({ error: "請提供 username 和 password" });
+    return;
+  }
+
+  const usernameError = validateUsername(username);
+  if (usernameError) {
+    res.status(400).json({ error: usernameError });
+    return;
+  }
+
+  const passwordError = validatePasswordStrength(password);
+  if (passwordError) {
+    res.status(400).json({ error: passwordError });
+    return;
+  }
+
+  try {
+    const passwordHash = await hashPassword(password);
+    await addWebUser(username, passwordHash, 1); // is_admin = 1
+
+    // 立即登入
+    const result = await exchangePasswordCredentials(username, password);
+    if (!result) {
+      res.status(500).json({ error: "初始化成功但自動登入失敗，請手動登入" });
+      return;
+    }
+    res.json({
+      sessionToken: result.sessionToken,
+      isAdmin: result.isAdmin,
+      username: result.username,
+    });
+  } catch (err) {
+    // UNIQUE constraint 衝突（跨 DB 方言通用比對）
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/unique|duplicate/i.test(msg)) {
+      res.status(409).json({ error: "使用者名稱已存在" });
+      return;
+    }
+    console.error("[web] setup error:", err);
+    res.status(500).json({ error: "初始化失敗" });
+  }
+});
+
+/**
+ * POST /web/api/auth/login — 登入（根據 WEB_AUTH_MODE 分叉）
+ *
+ * telegram 模式：{ token: "OTP" } → exchangeToken
+ * password 模式：{ username, password } → exchangePasswordCredentials
+ */
 router.post("/api/auth/login", async (req: Request, res: Response) => {
+  if (config.WEB_AUTH_MODE === "password") {
+    // ---- password 模式 ----
+    const { username, password } = req.body;
+    if (typeof username !== "string" || typeof password !== "string") {
+      res.status(400).json({ error: "請提供 username 和 password" });
+      return;
+    }
+
+    const result = await exchangePasswordCredentials(username, password);
+    if (!result) {
+      // 統一錯誤訊息防止用戶名枚舉
+      res.status(401).json({ error: "帳號或密碼錯誤" });
+      return;
+    }
+
+    res.json({
+      sessionToken: result.sessionToken,
+      tgUserId: result.tgUserId,
+      isAdmin: result.isAdmin,
+      username: result.username,
+    });
+    return;
+  }
+
+  // ---- telegram 模式（預設）----
   const { token } = req.body;
   if (!token || typeof token !== "string") {
     res.status(400).json({ error: "缺少 token 參數" });
@@ -432,14 +566,78 @@ router.post("/api/auth/logout", async (req: Request, res: Response) => {
 
 /** GET /web/api/auth/me — 當前用戶資訊 */
 router.get("/api/auth/me", async (req: Request, res: Response) => {
-  const { tgUserId, isAdmin } = req.webAuth!;
+  const { tgUserId, isAdmin, userType, username } = req.webAuth!;
   const user = await getUserByTgId(tgUserId);
+  const panelPath = await getPanelPath();
   res.json({
     tgUserId,
     isAdmin,
-    username: user?.username ?? null,
+    userType,
+    panelPath,
+    username: userType === "password" ? (username ?? null) : (user?.username ?? null),
     isActive: user ? Number(user.is_active) === 1 : true,
   });
+});
+
+/** PUT /web/api/auth/password — 修改自己的密碼（僅 password 模式） */
+router.put("/api/auth/password", async (req: Request, res: Response) => {
+  const webAuth = req.webAuth!;
+  if (webAuth.userType !== "password" || !webAuth.webUserId) {
+    res.status(400).json({ error: "此功能僅在帳密模式下可用" });
+    return;
+  }
+
+  const { currentPassword, newPassword } = req.body;
+  if (typeof currentPassword !== "string" || typeof newPassword !== "string") {
+    res.status(400).json({ error: "請提供 currentPassword 和 newPassword" });
+    return;
+  }
+
+  const passwordError = validatePasswordStrength(newPassword);
+  if (passwordError) {
+    res.status(400).json({ error: passwordError });
+    return;
+  }
+
+  // 驗證舊密碼
+  const webUser = await getWebUserById(webAuth.webUserId);
+  if (!webUser) {
+    res.status(404).json({ error: "用戶不存在" });
+    return;
+  }
+
+  const valid = await verifyPassword(currentPassword, webUser.password_hash);
+  if (!valid) {
+    res.status(401).json({ error: "目前密碼錯誤" });
+    return;
+  }
+
+  try {
+    const newHash = await hashPassword(newPassword);
+    await updateWebUserPassword(webAuth.webUserId, newHash);
+    // 銷毀其他設備的 session（保留當前 session）
+    const currentToken = req.headers.authorization?.slice(7);
+    destroySessionsByWebUserId(webAuth.webUserId, currentToken);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("[web] changePassword error:", err);
+    res.status(500).json({ error: "修改密碼失敗" });
+  }
+});
+/** POST /web/api/admin/regenerate-panel-path — 重新生成 /{uuid}/web 路徑（管理員） */
+router.post("/api/admin/regenerate-panel-path", requireAdmin, async (req: Request, res: Response) => {
+  if (!config.LOGIN_WEB_PATH) {
+    res.status(400).json({ error: "此功能僅在設定 LOGIN_WEB_PATH 時可用" });
+    return;
+  }
+  const newPanelPath = await regenerateWebPanelUuid();
+  // 銷毀當前 session + 清除 cookie，強制完全重新登入
+  const auth = req.headers.authorization;
+  if (auth?.startsWith("Bearer ")) {
+    destroySession(auth.slice(7));
+  }
+  clearSessionCookie(res);
+  res.json({ panelPath: newPanelPath, loginPath: config.LOGIN_WEB_PATH });
 });
 
 // ---------------------------------------------------------------------------

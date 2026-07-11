@@ -1146,15 +1146,15 @@ describe("Backup / Restore", async () => {
     cleanupTempDir();
   });
 
-  it("exportDatabase returns all 10 backup tables with version 1", async () => {
+  it("exportDatabase returns all 11 backup tables with version 1", async () => {
     const data = await exportDatabase();
     expect(data.version).toBe(1);
     expect(typeof data.exportedAt).toBe("string");
-    // All 10 tables should be present (even if empty)
+    // All 11 tables should be present (even if empty)
     const expectedTables = [
       "api_keys", "coding_configs", "model_mappings", "model_prices",
       "model_restrictions", "providers", "settings", "usage",
-      "user_groups", "users",
+      "user_groups", "users", "web_users",
     ];
     expect(Object.keys(data.tables).sort()).toEqual(expectedTables);
     // Empty DB → all tables are empty arrays

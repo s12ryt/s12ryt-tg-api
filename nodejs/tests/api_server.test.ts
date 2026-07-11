@@ -202,6 +202,8 @@ vi.mock("../src/db/database.js", () => {
     })),
     getDailyUsage: vi.fn(() => ({ total_input_tokens: 0, total_output_tokens: 0, total_cost: 0 })),
     getMonthlyUsage: vi.fn(() => ({ total_input_tokens: 0, total_output_tokens: 0, total_cost: 0 })),
+    WEB_USER_TG_ID_OFFSET: 9_000_000_000,
+    getWebUserById: vi.fn(() => undefined),
   };
 });
 

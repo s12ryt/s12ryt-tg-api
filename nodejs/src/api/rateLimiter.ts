@@ -118,7 +118,7 @@ export async function rateLimitMiddleware(req: Request, res: Response, next: Nex
   }
 
   // Admin bypasses all rate limits
-  if (auth.tgUserId === config.ADMIN_ID) {
+  if (auth.isAdmin) {
     next();
     return;
   }

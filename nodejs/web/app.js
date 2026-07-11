@@ -19,8 +19,9 @@
 
   const state = {
     sessionToken: null,
-    user: null, // { tgUserId, isAdmin, username, isActive }
+    user: null, // { tgUserId, isAdmin, username, isActive, userType }
     models: [],
+    authConfig: null, // { authMode: "telegram"|"password", needsSetup: boolean }
   };
 
   let systemUsageTimer = null;
@@ -66,9 +67,7 @@
       if (!resp.ok) {
         const msg = data.error || `HTTP ${resp.status}`;
         if (resp.status === 401) {
-          state.sessionToken = null;
-          localStorage.removeItem("web_session");
-          showLogin("登入已過期，請重新從 Bot 取得連結");
+          handleSessionExpired("登入已過期，請重新登入");
           return new Promise(() => {}); // 停止執行，不觸發 caller 的 catch
         }
         if (resp.status === 404) {
@@ -357,7 +356,47 @@
   function showLogin(msg = "請稍候") {
     $("#app").classList.add("hidden");
     $("#login-screen").classList.remove("hidden");
+    $("#login-loading").classList.remove("hidden");
+    $("#login-password").classList.add("hidden");
+    $("#login-setup").classList.add("hidden");
     $("#login-msg").textContent = msg;
+  }
+
+  function showLoginPassword(msg = "") {
+    $("#app").classList.add("hidden");
+    $("#login-screen").classList.remove("hidden");
+    $("#login-loading").classList.add("hidden");
+    $("#login-password").classList.remove("hidden");
+    $("#login-setup").classList.add("hidden");
+    $("#login-password-msg").textContent = msg;
+    const u = $("#login-username");
+    if (u && !u.value) setTimeout(() => u.focus(), 50);
+  }
+
+  function showLoginSetup(msg = "") {
+    $("#app").classList.add("hidden");
+    $("#login-screen").classList.remove("hidden");
+    $("#login-loading").classList.add("hidden");
+    $("#login-password").classList.add("hidden");
+    $("#login-setup").classList.remove("hidden");
+    $("#setup-msg").textContent = msg;
+    const u = $("#setup-username");
+    if (u && !u.value) setTimeout(() => u.focus(), 50);
+  }
+
+  function handleSessionExpired(msg) {
+    state.sessionToken = null;
+    state.user = null;
+    localStorage.removeItem("web_session");
+    if (state.authConfig && state.authConfig.authMode === "password") {
+      if (state.authConfig.needsSetup) {
+        showLoginSetup(msg);
+      } else {
+        showLoginPassword(msg);
+      }
+    } else {
+      showLogin(msg);
+    }
   }
 
   function showApp() {
@@ -366,15 +405,18 @@
   }
 
   async function tryLogin() {
-    // 從 URL 取 token
-    const params = new URLSearchParams(location.search);
-    const token = params.get("token");
+    // 先取得認證模式配置
+    try {
+      state.authConfig = await API.get("/web/api/auth/config");
+    } catch {
+      // 無法取得配置，回退到 telegram 模式
+      state.authConfig = { authMode: "telegram", needsSetup: false };
+    }
 
     // 從 localStorage 取已有 session
     const saved = localStorage.getItem("web_session");
-    if (saved && !token) {
+    if (saved) {
       state.sessionToken = saved;
-      // 驗證 session 是否有效
       try {
         const me = await API.get("/web/api/auth/me");
         onLoginSuccess(me);
@@ -385,27 +427,62 @@
       }
     }
 
-    // 用 OTP token 換 session
-    if (token) {
-      try {
-        const result = await API.post("/web/api/auth/login", { token });
-        state.sessionToken = result.sessionToken;
-        localStorage.setItem("web_session", result.sessionToken);
-        const me = await API.get("/web/api/auth/me");
-        onLoginSuccess(me);
-        // 清除 URL 中的 token
-        history.replaceState(null, "", location.pathname);
-        return;
-      } catch (err) {
-        showLogin(err.message || "登入連結已過期，請重新從 Bot 取得");
-        return;
+    // 從 URL 取 token（telegram 模式 OTP）
+    const params = new URLSearchParams(location.search);
+    const token = params.get("token");
+
+    // telegram 模式
+    if (state.authConfig.authMode === "telegram") {
+      if (token) {
+        try {
+          const result = await API.post("/web/api/auth/login", { token });
+          state.sessionToken = result.sessionToken;
+          localStorage.setItem("web_session", result.sessionToken);
+          const me = await API.get("/web/api/auth/me");
+          onLoginSuccess(me);
+          history.replaceState(null, "", location.pathname);
+          return;
+        } catch (err) {
+          showLogin(err.message || "登入連結已過期，請重新從 Bot 取得");
+          return;
+        }
       }
+      showLogin("請從 Telegram Bot 使用 /web 指令取得登入連結");
+      return;
     }
 
-    showLogin("請從 Telegram Bot 使用 /web 指令取得登入連結");
+    // password 模式
+    if (state.authConfig.authMode === "password") {
+      // 首次設定，顯示引導頁面
+      if (state.authConfig.needsSetup) {
+        showLoginSetup("首次使用，請建立管理員帳號");
+        return;
+      }
+      // 顯示帳密登入表單
+      showLoginPassword();
+      return;
+    }
+
+    // 未知模式，回退
+    showLogin("無法識別認證模式，請檢查設定");
   }
 
   function onLoginSuccess(me) {
+    // 成功到達 panelPath，清除 redirect 標記
+    if (me.panelPath && window.location.pathname === me.panelPath) {
+      sessionStorage.removeItem("tried_panel_redirect");
+    }
+    // 如果有 panelPath 且當前不在 panelPath 上，嘗試 redirect
+    if (me.panelPath && window.location.pathname !== me.panelPath) {
+      // 防止無限 redirect 迴圈（cookie 無效但 session 有效時最多嘗試一次）
+      if (!sessionStorage.getItem("tried_panel_redirect")) {
+        sessionStorage.setItem("tried_panel_redirect", "1");
+        window.location.href = me.panelPath;
+        return;
+      }
+      // redirect 回來了（cookie 無效），清除標記，在當前頁面顯示應用
+      sessionStorage.removeItem("tried_panel_redirect");
+    }
     state.user = me;
     // 更新 UI
     $("#user-name").textContent = me.username || `ID: ${me.tgUserId}`;
@@ -2901,6 +2978,15 @@
           </div>
         </div>
 
+        ${state.authConfig?.loginPath ? `
+        <div class="card" style="margin-top:16px;">
+          <div class="card-title">${ic.lock} 安全路徑</div>
+          <div class="form-group">
+            <div class="hint" style="margin-bottom:8px;">當前 Web 面板透過隨機 UUID 路徑保護。重新生成後舊連結立即失效，需重新登入。</div>
+            <button class="btn btn-secondary" id="btn-regenerate-panel-path">重新生成面板路徑</button>
+          </div>
+        </div>
+        ` : ""}
         <div class="card" style="margin-top:16px;">
           <div class="card-title">${ic.alert} 危險操作</div>
           <div class="form-group">
@@ -3016,6 +3102,29 @@
       };
 
       // 重啟
+            // 安全路徑：重新生成 panel UUID
+      const regenBtn = $("#btn-regenerate-panel-path");
+      if (regenBtn) {
+        regenBtn.onclick = async () => {
+          if (!confirm("確定要重新生成面板路徑嗎？目前的所有連結將立即失效，您需要重新登入。")) return;
+          regenBtn.disabled = true;
+          regenBtn.textContent = "生成中...";
+          try {
+            const result = await API.post("/web/api/admin/regenerate-panel-path");
+            state.sessionToken = null;
+            state.user = null;
+            localStorage.removeItem("web_session");
+            toast("面板路徑已更新，正在跳轉到登入頁...", "success");
+            setTimeout(() => { window.location.href = result.loginPath; }, 1500);
+          } catch (err) {
+            toast(err.message, "error");
+          } finally {
+            regenBtn.disabled = false;
+            regenBtn.textContent = "重新生成面板路徑";
+          }
+        };
+      }
+
       $("#btn-restart").onclick = () => {
         confirm("確定要重啟進程嗎？所有服務會短暫中斷。", async () => {
           try {
@@ -3103,11 +3212,80 @@
       try {
         await API.post("/web/api/auth/logout");
       } catch { /* ignore */ }
-      state.sessionToken = null;
-      state.user = null;
-      localStorage.removeItem("web_session");
-      showLogin("已登出，請從 Bot 重新取得連結");
+      handleSessionExpired("已登出");
     };
+
+    // Password mode: login form
+    const loginForm = $("#login-form");
+    if (loginForm) {
+      loginForm.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const username = $("#login-username").value.trim();
+        const password = $("#login-password-input").value;
+        const msgEl = $("#login-password-msg");
+        if (!username || !password) {
+          msgEl.textContent = "請輸入帳號和密碼";
+          return;
+        }
+        const btn = $("#login-submit");
+        btn.disabled = true;
+        btn.textContent = "登入中...";
+        msgEl.textContent = "";
+        try {
+          const result = await API.post("/web/api/auth/login", { username, password });
+          state.sessionToken = result.sessionToken;
+          localStorage.setItem("web_session", result.sessionToken);
+          const me = await API.get("/web/api/auth/me");
+          onLoginSuccess(me);
+        } catch (err) {
+          msgEl.textContent = err.message || "登入失敗";
+        } finally {
+          btn.disabled = false;
+          btn.textContent = "登入";
+        }
+      });
+    }
+
+    // Password mode: setup form (首次建立管理員)
+    const setupForm = $("#setup-form");
+    if (setupForm) {
+      setupForm.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const username = $("#setup-username").value.trim();
+        const password = $("#setup-password").value;
+        const confirmPw = $("#setup-password-confirm").value;
+        const msgEl = $("#setup-msg");
+        if (!username || !password) {
+          msgEl.textContent = "請輸入帳號和密碼";
+          return;
+        }
+        if (password !== confirmPw) {
+          msgEl.textContent = "兩次密碼不一致";
+          return;
+        }
+        if (password.length < 8) {
+          msgEl.textContent = "密碼至少需要 8 個字元";
+          return;
+        }
+        const btn = $("#setup-submit");
+        btn.disabled = true;
+        btn.textContent = "建立中...";
+        msgEl.textContent = "";
+        try {
+          const result = await API.post("/web/api/auth/setup", { username, password });
+          state.sessionToken = result.sessionToken;
+          localStorage.setItem("web_session", result.sessionToken);
+          state.authConfig = { authMode: "password", needsSetup: false };
+          const me = await API.get("/web/api/auth/me");
+          onLoginSuccess(me);
+        } catch (err) {
+          msgEl.textContent = err.message || "建立失敗";
+        } finally {
+          btn.disabled = false;
+          btn.textContent = "建立管理員";
+        }
+      });
+    }
 
     // ESC 關閉 modal / mobile nav
     document.addEventListener("keydown", (e) => {

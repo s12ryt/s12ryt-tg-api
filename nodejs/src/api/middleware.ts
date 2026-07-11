@@ -8,7 +8,8 @@
  */
 
 import { Request, Response, NextFunction } from "express";
-import { lookupApiKeyCached } from "../db/database.js";
+import { lookupApiKeyCached, getWebUserById, WEB_USER_TG_ID_OFFSET } from "../db/database.js";
+import { config } from "../config.js";
 
 const KEY_PREFIX = "sk-s12ryt-";
 
@@ -20,6 +21,7 @@ export interface AuthInfo {
   userId: string;
   apiKeyId: string;
   tgUserId: number;
+  isAdmin: boolean;
 }
 
 declare global {
@@ -108,10 +110,19 @@ export async function authMiddleware(req: Request, res: Response, next: NextFunc
       return;
     }
 
+    // 判斷 admin：telegram 模式比較 ADMIN_ID；password 模式查 web_user is_admin
+    let isAdmin = false;
+    if (keyInfo.tgUserId === config.ADMIN_ID) {
+      isAdmin = true;
+    } else if (keyInfo.tgUserId >= WEB_USER_TG_ID_OFFSET) {
+      const webUser = await getWebUserById(keyInfo.tgUserId - WEB_USER_TG_ID_OFFSET);
+      isAdmin = webUser ? Number(webUser.is_admin) === 1 : false;
+    }
     req.auth = {
       userId: String(keyInfo.userId),
       apiKeyId: String(keyInfo.apiKeyId),
       tgUserId: keyInfo.tgUserId,
+      isAdmin,
     };
     next();
   } catch (err) {

@@ -9,15 +9,57 @@
   <title>S12RYT 配置面板</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="/web/style.css">
 </head>
 <body>
-  <!-- 登入等待畫面 -->
+  <!-- 登入畫面（多模式） -->
   <div id="login-screen" class="login-screen">
     <div class="login-card">
-      <div class="spinner" aria-label="載入中"></div>
-      <h2>正在驗證登入</h2>
-      <p id="login-msg">請稍候</p>
+      <!-- 載入中（telegram 模式 OTP 驗證 / 初始化偵測） -->
+      <div id="login-loading">
+        <div class="spinner" aria-label="載入中"></div>
+        <h2>正在驗證登入</h2>
+        <p id="login-msg">請稍候</p>
+      </div>
+
+      <!-- 帳密登入表單（password 模式） -->
+      <div id="login-password" class="hidden">
+        <h2>S12RYT 配置面板</h2>
+        <form id="login-form" autocomplete="on">
+          <div class="form-field">
+            <label for="login-username">帳號</label>
+            <input type="text" id="login-username" name="username" autocomplete="username" required>
+          </div>
+          <div class="form-field">
+            <label for="login-password-input">密碼</label>
+            <input type="password" id="login-password-input" name="password" autocomplete="current-password" required>
+          </div>
+          <button type="submit" class="btn-primary" id="login-submit">登入</button>
+        </form>
+        <p id="login-password-msg" class="login-error"></p>
+      </div>
+
+      <!-- 首次管理員引導（password 模式 + 無用戶） -->
+      <div id="login-setup" class="hidden">
+        <h2>初始設定</h2>
+        <p class="login-hint">建立第一個管理員帳號</p>
+        <form id="setup-form" autocomplete="off">
+          <div class="form-field">
+            <label for="setup-username">管理員帳號</label>
+            <input type="text" id="setup-username" required placeholder="3-64 字元，英數、底線、連字號">
+          </div>
+          <div class="form-field">
+            <label for="setup-password">密碼</label>
+            <input type="password" id="setup-password" required placeholder="至少 8 個字元">
+          </div>
+          <div class="form-field">
+            <label for="setup-password-confirm">確認密碼</label>
+            <input type="password" id="setup-password-confirm" required>
+          </div>
+          <button type="submit" class="btn-primary" id="setup-submit">建立管理員</button>
+        </form>
+        <p id="setup-msg" class="login-error"></p>
+      </div>
     </div>
   </div>
 
@@ -145,6 +187,6 @@
     </div>
   </div>
 
-  <script src="app.js"></script>
+  <script src="/web/app.js"></script>
 </body>
 </html>

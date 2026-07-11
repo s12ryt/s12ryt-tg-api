@@ -31,7 +31,7 @@ export async function quotaCheckMiddleware(req: Request, res: Response, next: Ne
   }
 
   // Admin bypasses all quota checks
-  if (auth.tgUserId === config.ADMIN_ID) {
+  if (auth.isAdmin) {
     next();
     return;
   }

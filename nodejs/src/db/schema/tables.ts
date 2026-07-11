@@ -13,6 +13,7 @@
 export const BACKUP_TABLES = [
   "providers",
   "users",
+  "web_users",
   "api_keys",
   "usage",
   "settings",
@@ -54,6 +55,14 @@ export const TABLE_COLUMNS: Record<string, readonly string[]> = {
     "monthly_token_override",
     "daily_cost_override",
     "monthly_cost_override",
+  ],
+  web_users: [
+    "id",
+    "username",
+    "password_hash",
+    "is_admin",
+    "is_active",
+    "created_at",
   ],
   api_keys: [
     "id",

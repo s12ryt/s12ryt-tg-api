@@ -25,11 +25,14 @@ type MyBot = Bot<MyContext>;
  * 推導 Web 控制台的基底 URL。
  *
  * 邏輯與 /url 指令一致：優先使用 DB 中的 api_url setting，
- * 回退到 config.DEFAULT_API_URL，然後附加 /web 路徑。
+ * 回退到 config.DEFAULT_API_URL。
+ *
+ * 若設定了 LOGIN_WEB_PATH（自定義登入路徑），則使用該路徑作為前端入口；
+ * 否則使用預設的 /web。
  */
 async function getWebBaseUrl(): Promise<string> {
   const base = ((await getSetting("api_url")) ?? config.DEFAULT_API_URL).replace(/\/+$/, "");
-  return `${base}/web`;
+  return config.LOGIN_WEB_PATH ? `${base}${config.LOGIN_WEB_PATH}` : `${base}/web`;
 }
 
 /**

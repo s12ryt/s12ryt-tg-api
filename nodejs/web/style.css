@@ -135,6 +135,59 @@ body.nav-open { overflow: hidden; }
   -webkit-text-fill-color: transparent;
 }
 .login-card p { color: var(--text-secondary); }
+.login-form {
+  display: flex; flex-direction: column; gap: 14px;
+  margin-top: 8px; text-align: left;
+}
+.login-form label {
+  font-size: 12px; font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase; letter-spacing: 0.5px;
+}
+.login-form input[type="text"],
+.login-form input[type="password"] {
+  width: 100%;
+  padding: 10px 14px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  color: var(--text-primary);
+  font-size: 14px;
+  font-family: var(--font);
+  transition: border-color var(--transition), box-shadow var(--transition);
+  box-sizing: border-box;
+}
+.login-form input[type="text"]:focus,
+.login-form input[type="password"]:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+.login-form button[type="submit"] {
+  margin-top: 4px;
+  padding: 11px 20px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-hover));
+  border: none;
+  border-radius: var(--radius);
+  color: #fff;
+  font-size: 14px; font-weight: 700;
+  cursor: pointer;
+  transition: all var(--transition);
+  letter-spacing: 0.5px;
+}
+.login-form button[type="submit"]:hover:not(:disabled) {
+  box-shadow: 0 0 16px var(--accent-glow);
+  transform: translateY(-1px);
+}
+.login-form button[type="submit"]:disabled {
+  opacity: 0.6; cursor: not-allowed;
+}
+.login-error {
+  color: var(--danger);
+  font-size: 13px;
+  min-height: 18px;
+  text-align: center;
+}
 .spinner {
   width: 48px; height: 48px;
   border: 3px solid var(--border-light);

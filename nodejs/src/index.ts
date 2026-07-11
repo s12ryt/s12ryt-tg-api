@@ -41,12 +41,16 @@ type MyBot = Bot<MyContext>;
 // ---------------------------------------------------------------------------
 
 function validateConfig(): void {
-  if (!config.BOT_TOKEN) {
-    throw new Error("BOT_TOKEN is required but empty. Check your .env file.");
+  if (config.WEB_AUTH_MODE === "telegram") {
+    // telegram 模式需要 BOT_TOKEN + ADMIN_ID
+    if (!config.BOT_TOKEN) {
+      throw new Error("BOT_TOKEN is required in WEB_AUTH_MODE=telegram. Check your .env file.");
+    }
+    if (config.ADMIN_ID === null || isNaN(config.ADMIN_ID)) {
+      throw new Error("ADMIN_ID must be a valid number in WEB_AUTH_MODE=telegram. Check your .env file.");
+    }
   }
-  if (!config.ADMIN_ID || isNaN(config.ADMIN_ID)) {
-    throw new Error("ADMIN_ID must be a valid number. Check your .env file.");
-  }
+  // password 模式不需要 BOT_TOKEN / ADMIN_ID，Bot 不會啟動
 }
 
 // ---------------------------------------------------------------------------
@@ -100,6 +104,7 @@ async function setBotCommands(bot: MyBot, pluginCommands: BotCommand[] = []): Pr
 
 async function main(): Promise<void> {
   console.log("=== s12ryt-tg-api ===");
+  console.log(`[config] WEB_AUTH_MODE=${config.WEB_AUTH_MODE}`);
 
   // 1. Validate configuration
   try {
@@ -119,76 +124,73 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // 3. Create and configure Telegram Bot
-  const bot: MyBot = new Bot<MyContext>(config.BOT_TOKEN);
-
-  // Install session middleware (required by conversations plugin)
-  bot.use(session({ initial: () => ({}) }));
-
-  // Install conversations plugin
-  bot.use(conversations());
-
-  // -----------------------------------------------------------------------
-  // Global /cancel handler — MUST be after conversations() but before any
-  // createConversation() registration, so it intercepts /cancel BEFORE
-  // the conversation middleware can consume the update.
-  //
-  // Problem: when a conversation is active, ALL updates from that user are
-  // consumed by the conversation. Sub-functions (doAddProvider, etc.) that
-  // call conversation.wait() don't always check for /cancel, so the user
-  // gets stuck inside the conversation and other commands stop working.
-  //
-  // Fix: ctx.conversation.exit() force-clears all conversation session data,
-  // freeing the user from any stuck conversation.
-  // -----------------------------------------------------------------------
-  bot.use(async (ctx, next) => {
-    const text = ctx.msg?.text?.trim() ?? "";
-    const firstWord = text.split(/\s/)[0] ?? "";
-    if (firstWord === "/cancel" || firstWord.startsWith("/cancel@")) {
-      const active = await ctx.conversation.active();
-      const count = Object.values(active).reduce((s, n) => s + n, 0);
-      if (count > 0) {
-        await ctx.conversation.exit();
-        await ctx.reply("✅ 已取消當前操作。");
-      } else {
-        await ctx.reply("ℹ️ 目前沒有進行中的操作。");
-      }
-      return; // Do not call next() — update is fully handled
-    }
-    await next();
-  });
-
-  // -----------------------------------------------------------------------
-  // Command logging middleware — runs before all handlers
-  // -----------------------------------------------------------------------
-  bot.use(async (ctx, next) => {
-    const entities = ctx.msg?.entities;
-    if (entities?.some((e) => e.type === "bot_command")) {
-      const text = ctx.msg?.text ?? "";
-      const command = text.split(/\s/)[0] ?? "/?";
-      const args = text.slice(command.length).trim();
-      const user = ctx.from;
-      console.log(
-        `[CMD] user=${user?.id ?? "?"} (@${user?.username ?? ""}) ` +
-        `${command}${args ? " args=" + args : ""}`
-      );
-    }
-    await next();
-  });
-
-  // Register bot handlers
-  registerUserHandlers(bot);
-  registerAdminHandlers(bot);
-  registerLimitHandlers(bot);
-  registerUpdateHandlers(bot);
-  registerWebHandlers(bot);
-  registerBackupHandlers(bot);
-
+  // 載入 Node.js 插件（兩種模式都需要，Express route 插件在 password 模式仍有用）
   await loadNodeJsPlugins(config.NODEJS_PLUGIN_PATHS);
-  await initializeNodeJsPlugins(bot);
 
-  // 3.5 Set bot commands menu
-  await setBotCommands(bot, getPluginBotCommands());
+  // 3. Telegram Bot（僅 telegram 模式啟動）
+  let bot: MyBot | null = null;
+  if (config.WEB_AUTH_MODE === "telegram") {
+    bot = new Bot<MyContext>(config.BOT_TOKEN);
+
+    // Install session middleware (required by conversations plugin)
+    bot.use(session({ initial: () => ({}) }));
+
+    // Install conversations plugin
+    bot.use(conversations());
+
+    // -----------------------------------------------------------------------
+    // Global /cancel handler — MUST be after conversations() but before any
+    // createConversation() registration, so it intercepts /cancel BEFORE
+    // the conversation middleware can consume the update.
+    // -----------------------------------------------------------------------
+    bot.use(async (ctx, next) => {
+      const text = ctx.msg?.text?.trim() ?? "";
+      const firstWord = text.split(/\s/)[0] ?? "";
+      if (firstWord === "/cancel" || firstWord.startsWith("/cancel@")) {
+        const active = await ctx.conversation.active();
+        const count = Object.values(active).reduce((s, n) => s + n, 0);
+        if (count > 0) {
+          await ctx.conversation.exit();
+          await ctx.reply("✅ 已取消當前操作。");
+        } else {
+          await ctx.reply("ℹ️ 目前沒有進行中的操作。");
+        }
+        return;
+      }
+      await next();
+    });
+
+    // -----------------------------------------------------------------------
+    // Command logging middleware
+    // -----------------------------------------------------------------------
+    bot.use(async (ctx, next) => {
+      const entities = ctx.msg?.entities;
+      if (entities?.some((e) => e.type === "bot_command")) {
+        const text = ctx.msg?.text ?? "";
+        const command = text.split(/\s/)[0] ?? "/?";
+        const args = text.slice(command.length).trim();
+        const user = ctx.from;
+        console.log(
+          `[CMD] user=${user?.id ?? "?"} (@${user?.username ?? ""}) ` +
+          `${command}${args ? " args=" + args : ""}`
+        );
+      }
+      await next();
+    });
+
+    // Register bot handlers
+    registerUserHandlers(bot);
+    registerAdminHandlers(bot);
+    registerLimitHandlers(bot);
+    registerUpdateHandlers(bot);
+    registerWebHandlers(bot);
+    registerBackupHandlers(bot);
+
+    await initializeNodeJsPlugins(bot);
+    await setBotCommands(bot, getPluginBotCommands());
+  } else {
+    console.log("[bot] Skipped — WEB_AUTH_MODE=password, Bot not started.");
+  }
 
   // 4. Start Express API server
   try {
@@ -200,27 +202,30 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // 4.5 Start Cloudflare Tunnel (optional — only if CLOUDFLARE_TUNNEL is set)
+  // 4.5 Start Cloudflare Tunnel (optional)
   try {
     await startTunnel(config.API_PORT);
   } catch (err: any) {
     console.error(`[tunnel] Failed to start tunnel: ${err.message}`);
-    // Non-fatal — continue without tunnel
   }
 
-  // 5. Start Telegram Bot
-  try {
-    await bot.start({
-      onStart: (info) => {
-        console.log(
-          `[bot] Logged in as @${info.username} (id: ${info.id})`
-        );
-        console.log("--- All systems operational ---");
-      },
-    });
-  } catch (err: any) {
-    console.error(`[bot] Failed to start bot: ${err.message}`);
-    process.exit(1);
+  // 5. Start Telegram Bot polling（僅 telegram 模式）
+  if (bot) {
+    try {
+      await bot.start({
+        onStart: (info) => {
+          console.log(
+            `[bot] Logged in as @${info.username} (id: ${info.id})`
+          );
+          console.log("--- All systems operational ---");
+        },
+      });
+    } catch (err: any) {
+      console.error(`[bot] Failed to start bot: ${err.message}`);
+      process.exit(1);
+    }
+  } else {
+    console.log("--- Web-only mode operational (Bot disabled) ---");
   }
 }
 

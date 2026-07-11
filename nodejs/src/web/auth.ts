@@ -1,22 +1,34 @@
 /**
- * Web 控制台認證系統
+ * Web 控制台認證系統（雙模式）
  *
- * 兩階段認證流程：
+ * ## telegram 模式（預設）
+ * 兩階段認證：
  *   1. Bot 側呼叫 generateLoginToken(tgUserId) → 產生一次性 OTP（5 分鐘有效）
  *   2. 前端帶 OTP 呼叫 POST /web/api/auth/login → 換取 Session Token（24 小時有效）
- *   3. 後續 API 請求帶 Authorization: Bearer {sessionToken}
+ *
+ * ## password 模式（WEB_AUTH_MODE=password）
+ * 帳密獨立登入：
+ *   1. 前端帶 username + password 呼叫 POST /web/api/auth/login
+ *   2. 後端驗證密碼 → 換取 Session Token（24 小時有效）
+ *   3. Bot 不啟動，不需要 Telegram
  *
  * 安全設計：
  *   - OTP 使用後立即失效（一次性）
  *   - Session 24 小時有效，過期自動清除
  *   - 每 10 分鐘清理過期的 OTP 和 Session
- *   - exchangeToken 與每次請求時重新檢查用戶是否仍為 active
+ *   - exchangeToken / exchangePasswordCredentials 與每次請求時重新檢查用戶是否仍為 active
  */
 
 import crypto from "crypto";
 import type { Request, Response, NextFunction } from "express";
 import { config } from "../config.js";
-import { getUserByTgId } from "../db/database.js";
+import {
+  getUserByTgId,
+  getWebUserByUsername,
+  getWebUserById,
+  WEB_USER_TG_ID_OFFSET,
+} from "../db/database.js";
+import { verifyPassword } from "./password.js";
 
 // ---------------------------------------------------------------------------
 // 常數
@@ -36,7 +48,14 @@ interface OtpEntry {
 }
 
 interface SessionEntry {
+  /** 用戶類型：telegram OTP 登入或 password 帳密登入 */
+  userType: "telegram" | "password";
+  /** Telegram User ID（telegram 模式為真實 ID；password 模式為虛擬 ID） */
   tgUserId: number;
+  /** Web User ID（僅 password 模式） */
+  webUserId?: number;
+  /** 用戶名（僅 password 模式） */
+  username?: string;
   isAdmin: boolean;
   createdAt: number;
 }
@@ -48,7 +67,7 @@ const otpStore = new Map<string, OtpEntry>();
 const sessionStore = new Map<string, SessionEntry>();
 
 // ---------------------------------------------------------------------------
-// 核心函數
+// 核心函數 — Telegram OTP 模式
 // ---------------------------------------------------------------------------
 
 /**
@@ -101,6 +120,7 @@ export async function exchangeToken(otpToken: string): Promise<{ sessionToken: s
   // 產生 session
   const sessionToken = crypto.randomUUID();
   sessionStore.set(sessionToken, {
+    userType: "telegram",
     tgUserId: entry.tgUserId,
     isAdmin,
     createdAt: Date.now(),
@@ -108,6 +128,72 @@ export async function exchangeToken(otpToken: string): Promise<{ sessionToken: s
 
   return { sessionToken, tgUserId: entry.tgUserId, isAdmin };
 }
+
+// ---------------------------------------------------------------------------
+// 核心函數 — Password 帳密模式
+// ---------------------------------------------------------------------------
+
+/**
+ * 用帳號密碼換取 Session token。
+ *
+ * 驗證流程：
+ *   1. 查找 web_user by username
+ *   2. 驗證密碼（scrypt + constant-time compare）
+ *   3. 確認 is_active
+ *   4. 產生 session token
+ *
+ * @returns Session info 或 null（用戶不存在/密碼錯誤/已停用）
+ */
+export async function exchangePasswordCredentials(
+  username: string,
+  password: string,
+): Promise<{ sessionToken: string; tgUserId: number; isAdmin: boolean; webUserId: number; username: string } | null> {
+  const webUser = await getWebUserByUsername(username);
+  if (!webUser) return null;
+
+  // 確認帳號啟用
+  if (Number(webUser.is_active) !== 1) return null;
+
+  // 驗證密碼
+  const valid = await verifyPassword(password, webUser.password_hash);
+  if (!valid) return null;
+
+  const isAdmin = Number(webUser.is_admin) === 1;
+
+  // 查找對應的虛擬 users 記錄（addWebUser 時建立）
+  // 使用 WEB_USER_TG_ID_OFFSET + web_user_id 來計算虛擬 tg_user_id
+  const virtualTgUserId = WEB_USER_TG_ID_OFFSET + webUser.id;
+
+  // 確保虛擬記錄存在
+  let user = await getUserByTgId(virtualTgUserId);
+  if (!user) {
+    // 可能是舊版本建立的 web_user 沒有對應虛擬記錄，嘗試透過 username 查找
+    // 這裡不自動建立，因為 addWebUser 應該已經建立了
+    return null;
+  }
+
+  const sessionToken = crypto.randomUUID();
+  sessionStore.set(sessionToken, {
+    userType: "password",
+    tgUserId: virtualTgUserId,
+    webUserId: webUser.id,
+    username: webUser.username,
+    isAdmin,
+    createdAt: Date.now(),
+  });
+
+  return {
+    sessionToken,
+    tgUserId: virtualTgUserId,
+    isAdmin,
+    webUserId: webUser.id,
+    username: webUser.username,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Session 管理
+// ---------------------------------------------------------------------------
 
 /**
  * 取得 session 資訊（不銷毀）。
@@ -138,13 +224,20 @@ export function destroySession(sessionToken: string): void {
 // Express 中間件
 // ---------------------------------------------------------------------------
 
-/** 擴充 res.locals 以攜帶認證資訊 */
+/** 擴充 Request 以攜帶認證資訊 */
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace
   namespace Express {
     interface Request {
       webAuth?: {
+        /** 用戶類型 */
+        userType: "telegram" | "password";
+        /** Telegram User ID（telegram 模式為真實 ID；password 模式為虛擬 ID） */
         tgUserId: number;
+        /** Web User ID（僅 password 模式） */
+        webUserId?: number;
+        /** 用戶名（僅 password 模式） */
+        username?: string;
         isAdmin: boolean;
       };
     }
@@ -155,7 +248,11 @@ declare global {
  * Web API 認證中間件。
  *
  * 從 Authorization: Bearer {token} 提取 session token 並驗證。
- * 成功時注入 req.webAuth = { tgUserId, isAdmin }，失敗返回 401。
+ * 成功時注入 req.webAuth，失敗返回 401。
+ *
+ * 每次請求重新校驗用戶是否仍為 active：
+ *   - telegram 模式：檢查 isAdmin + getUserByTgId
+ *   - password 模式：檢查 web_user is_active（透過虛擬 users 記錄的 is_active 同步）
  */
 export async function webAuthMiddleware(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
@@ -172,20 +269,44 @@ export async function webAuthMiddleware(req: Request, res: Response, next: NextF
     return;
   }
 
-  // 每次請求重新校驗 isAdmin，不信任 session 創建時快取的值
-  // 確保 ADMIN_ID 變更後權限能即時生效
-  const isAdmin = info.tgUserId === config.ADMIN_ID;
+  // 每次請求重新校驗權限
+  let isAdmin: boolean;
+  if (info.userType === "telegram") {
+    // telegram 模式：isAdmin = tgUserId === ADMIN_ID
+    isAdmin = info.tgUserId === config.ADMIN_ID;
 
-  if (!isAdmin) {
+    if (!isAdmin) {
+      const user = await getUserByTgId(info.tgUserId);
+      if (!user || Number(user.is_active) !== 1) {
+        destroySession(token);
+        res.status(401).json({ error: "帳號已停用，請重新登入" });
+        return;
+      }
+    }
+  } else {
+    // password 模式：重新檢查 web_user active + is_admin（不依賴 session 快取）
     const user = await getUserByTgId(info.tgUserId);
     if (!user || Number(user.is_active) !== 1) {
       destroySession(token);
       res.status(401).json({ error: "帳號已停用，請重新登入" });
       return;
     }
+    // 重查 web_user is_admin（管理員降級後立即生效）
+    if (info.webUserId) {
+      const webUser = await getWebUserById(info.webUserId);
+      isAdmin = webUser ? Number(webUser.is_admin) === 1 : false;
+    } else {
+      isAdmin = false;
+    }
   }
 
-  req.webAuth = { tgUserId: info.tgUserId, isAdmin };
+  req.webAuth = {
+    userType: info.userType,
+    tgUserId: info.tgUserId,
+    webUserId: info.webUserId,
+    username: info.username,
+    isAdmin,
+  };
   next();
   } catch (err) {
     next(err);
@@ -255,4 +376,15 @@ export function stopCleanupTimer(): void {
 export function clearAllAuth(): void {
   otpStore.clear();
   sessionStore.clear();
+}
+
+/**
+ * 銷毀指定 web_user 的所有 session（密碼修改後踢出其他設備）。
+ */
+export function destroySessionsByWebUserId(webUserId: number, exceptToken?: string): void {
+  for (const [token, entry] of sessionStore) {
+    if (entry.webUserId === webUserId && token !== exceptToken) {
+      sessionStore.delete(token);
+    }
+  }
 }
