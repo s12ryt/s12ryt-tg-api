@@ -185,3 +185,58 @@
 - pg/mysql2 計畫為 optionalDependencies + dynamic import（SQLite-only 部署不需裝）。
 - 錯誤訊息慣例：英文=開發者契約（driver/types 已遵循）；繁中=管理員 UI。
 - 本環境 read/edit 工具每次注入完整 README（~330 行），大檔逐段操作時嚴重消耗上下文；改用 bash PowerShell `[IO.File]::ReadAllText/WriteAllText` + `.Replace` / `[regex]::Replace` 字面替換（不注入），或寫腳本到 `C:\Users\yoyo2\AppData\Local\Temp\opencode\` 執行。
+
+## 2026-07-11 - plugin-example v2.0.0 推送至獨立倉庫
+
+- 使用者要求把本地完成的 `plugin-example/` v2.0.0（覆蓋升級版，展示全部 6 services + 綜合場景）推送至獨立倉庫 `s12ryt/s12ryt-nodejs-plugin-example`（public，default branch main，2026-07-04 建立）。
+- **推送方式**：clone 獨立倉庫到 `C:\Users\yoyo2\AppData\Local\Temp\opencode\pe-push`（本機 git 認證可用，無需額外 token）→ 用本地 plugin-example/ 5 檔覆蓋 clone 根目錄對應檔（本地 `plugin-example/{src,dist,...}` → 獨立倉庫根 `{src,dist,...}`，去掉一層目錄）→ commit → push origin main。臨時目錄用後即刪。
+- **結果**：commit `61f1a97`「feat(example): v2.0.0 comprehensive example covering all 6 plugin services」，5 檔 +1438 −147，遠端 main 已更新（`b2b392d..61f1a97`），歷史保留。GitHub API list_commits 已驗證。
+- **內容覆蓋**：26 HTTP routes（按服務分組：status/dashboard/auth/storage/events/scheduler/providers/db）+ 3 bot commands（/plugin_example、/my_usage、/plugin_data）+ 生命週期 hooks（onStart/onStop 含 storage 記錄 + events emit + scheduler clearAll）。修復 v1 的 `getUserByTelegramId` 未 await bug（db 已 async 化後的 breaking change）。
+- **注意事項**：
+  - commit author 顯示為 `yoyo`（id:98624，本地 git config 預設身份），非 repo owner `s12ryt`（id:102228212）。push 認證仍走 s12ryt token（成功推到 s12ryt 的 repo）。若日後需統一作者為 s12ryt，需 amend + force-push（本次未做，風險大於效益）。
+  - 獨立倉庫 `src/index.ts` 的 `import type { NodeJsPlugin } from "../../nodejs/src/plugins/types.js"` 在獨立倉庫**無法獨立 tsc 編譯**（獨立倉庫無 nodejs/ 目錄）——這沿用 v1 既有的設計，src/ 僅供人類閱讀參考，實際運行版本是 `dist/index.js`（純 ESM，零外部 import，可直接 dynamic import）。
+  - 本地主專案的 plugin-example/ 5 檔仍處於「已修改未提交」狀態（git status M），未 commit 到 s12ryt-tg-api 主倉庫。主倉庫與獨立倉庫內容現在一致，但主倉庫需另一步 commit 才會同步。
+
+## 2026-07-11 - Web 雙模式認證（方案 3：telegram + password 環境變數切換）
+
+- **需求**：新增「單 web 面板模式」，讓沒有 Telegram Bot 的部署也能透過帳密管理 Web Console。
+- **設計決策**：
+  - 獨立 web_users 表（不動既有 users 表，零遷移風險）
+  - WEB_AUTH_MODE=telegram（預設）或 WEB_AUTH_MODE=password（帳密）
+  - LOGIN_WEB_PATH 自定義登入路徑（防爬蟲，設定後 /web HTML 入口返回 404）
+  - 虛擬 tg_user_id 機制：WEB_USER_TG_ID_OFFSET = 9_000_000_000，password 模式下每個 web_user 在 users 表建立虛擬記錄，所有下游路由（keys/usage/coding/limits）零改動
+  - Admin 判斷：web_users.is_admin 欄位（獨立於 config.ADMIN_ID）
+  - 首次引導：DB 無 web_user 時顯示初始化頁面
+  - 用戶註冊不開放，僅管理員建立
+- **改動檔案（14 檔）**：
+  1. config.ts — 新增 WebAuthMode 型別、WEB_AUTH_MODE/LOGIN_WEB_PATH 解析、BOT_TOKEN 空字串預設、ADMIN_ID number|null、移除 requireEnv
+  2. database.ts — web_users SQLite DDL + WebUser interface + 8 CRUD + WEB_USER_TG_ID_OFFSET
+  3. schema/tables.ts — BACKUP_TABLES + TABLE_COLUMNS 加 web_users
+  4. schema/postgres.ts — web_users PG DDL
+  5. schema/mysql.ts — web_users MySQL DDL
+  6. web/password.ts（新）— crypto.scryptSync 雜湊/驗證、validatePasswordStrength（8-128）、validateUsername（3-64）
+  7. web/auth.ts — SessionEntry 加 userType/webUserId/username；新增 exchangePasswordCredentials
+  8. web/routes.ts — GET /api/auth/config（公開）、POST /api/auth/setup（首次引導）、login 分叉、PUT /api/auth/password（改密碼）
+  9. index.ts — validateConfig 條件化；Bot 條件啟動
+  10. api/server.ts — LOGIN_WEB_PATH 路由入口
+  11. web/index.html — 帳密表單 + 引導表單 + 絕對路徑資源引用
+  12. web/app.js — showLoginPassword/showLoginSetup/handleSessionExpired/tryLogin authConfig
+  13. web/style.css — .login-form/.login-error 樣式
+  14. bot/handlers/webHandlers.ts — getWebBaseUrl respect LOGIN_WEB_PATH
+- **測試**：config.test.ts 改 2 throw 測試為預設值 + 加 4 WEB_AUTH_MODE/LOGIN_WEB_PATH 測試；database.test.ts backup 表 10 變 11
+- **驗證**：tsc --noEmit 零錯，vitest 443 tests 全綠
+- **挖蟲修復**：getWebBaseUrl() 硬編碼 /web 改為 respect LOGIN_WEB_PATH
+- **待辦（建議，非阻塞）**：前端缺密碼修改 UI；缺管理員管理 web_user API+UI；webAuthMiddleware password 模式不重查 is_admin
+
+## 2026-07-11 - 閱讀 agent 資料夾並接手（本 session）
+
+- 使用者要求「閱讀一下 agent 文件夾以方便後續回覆」。
+- 已完整閱讀 `agent/` 5 個檔案：
+  - `memory.md`（最新，2026-07-11）：決策與完成紀錄最完整
+  - `deep_todos.md`（原停在 07-09）：階段 2-5 仍標 [ ]，已與 memory 對齊改為完成並補 07-11 任務
+  - `項目表.md`（原停在 07-09）：DB 仍寫「全同步 / PG MySQL 佔位」，已更新為 async 多後端 + Web 雙模式 + 狀態快照
+  - `stage2-async-migration.md`：階段 2 執行手冊（歷史參考，實作已完成）
+  - `db-cloud-migration-design.md`：雲端 DB 12 章設計藍圖（歷史參考，階段 0-5 已落地）
+- **單一真相來源**：後續以 `memory.md` 為最新決策；`deep_todos.md` 追任務勾選；`項目表.md` 追結構/依賴。
+- **目前可開工狀態**：雲端 DB 0-5 完成、Web 雙模式認證完成、plugin-example v2 已推遠端；建議待辦見項目表「目前狀態快照」。
+- agent/ 不主動 commit（`.gitignore` + 早期誤 tracked 也不主動改 git 歷史）。

@@ -122,7 +122,7 @@
 - [x] 更新插件範例 README 中對 Python 版本的描述。
 - [x] 執行文件搜尋驗證，確認舊 `cd python` / `python/` 路徑未殘留於 Markdown 文件。
 
-## 2026-07-09 - 雲端資料庫遷移工程（階段 0/1 完成，階段 2 待新 session）
+## 2026-07-09~10 - 雲端資料庫遷移工程（階段 0-5 全部完成）
 
 - [x] **設計文件** `agent/db-cloud-migration-design.md`（12 章：路線對比/方言對照/5 機制改造/6 階段計畫/7 風險）。
 - [x] **使用者決策**：策略 B（可選後端）/ 路線 A（抽象 driver）/ TEXT 統一型別 / MySQL 8.0+ / PG+MySQL 都要。
@@ -130,7 +130,29 @@
 - [x] **階段 1** `nodejs/src/db/driver/sqliteDriver.ts`（SqliteDriver + getRawDatabase）+ `nodejs/src/db/driver/factory.ts`（createDriver 分流，PG/MySQL 佔位 throw）+ `tests/sqliteDriver.test.ts`（23）+ `tests/driverFactory.test.ts`（7）。
 - [x] **驗證**：tsc 零錯；vitest 20 檔 439 tests 全綠（409 原 + 30 新）；database.ts/database.test.ts 零改動（git 確認）。
 - [x] **階段 2 調查**：database.ts 全文 2430 行完整讀取，改造規則提煉至 `agent/stage2-async-migration.md`。
-- [ ] **階段 2**（待新 session）：database.ts 全面 async 化 + 14 呼叫檔 await + database.test.ts async 化。⭐接手必讀 `agent/stage2-async-migration.md`。大爆炸改動，需完整 session 收尾。
-- [ ] 階段 3：PostgresDriver（pg.Pool + $1 placeholder + RETURNING id）+ PG DDL + backup transaction 版。
-- [ ] 階段 4：MysqlDriver（mysql2 Pool + LAST_INSERT_ID）+ MySQL DDL。
-- [ ] 階段 5：環境變數文檔、Docker Compose PG/MySQL 範例、SQLite→雲端遷移工具、agent 文件。
+- [x] **階段 2**（2026-07-10 完成）：database.ts 全面 async 化 + 16 呼叫檔 + 6 測試檔；tsc 零錯，vitest 439 全綠。詳見 `agent/stage2-async-migration.md`。
+- [x] **階段 3**（2026-07-10 完成）：PostgresDriver + schema/postgres.ts + schema_migrations + importDatabaseCloud + CI pg-test job（19 tests）。
+- [x] **階段 4**（2026-07-10 完成）：MysqlDriver + schema/mysql.ts + importDatabaseCloud TRUNCATE 方言化 + CI mysql-test job（19 tests）。
+- [x] **階段 5**（2026-07-10 完成）：README/`.env.example` DATABASE_URL 文檔 + docker-compose PG/MySQL profile + `migrate-db.ts` 遷移工具。**階段 0-5 全部完成**。
+
+## 2026-07-11 - plugin-example v2.0.0 推送獨立倉庫
+
+- [x] 本地 plugin-example/ v2.0.0（覆蓋升級，展示全部 6 services + 綜合場景）推送至 `s12ryt/s12ryt-nodejs-plugin-example`。
+- [x] commit `61f1a97`：5 檔 +1438 −147；26 HTTP routes + 3 bot commands + 生命週期 hooks。
+- [x] 修復 v1 `getUserByTelegramId` 未 await bug（db async 化 breaking change）。
+- [ ] 主倉庫 plugin-example/ 仍為「已修改未提交」；與獨立倉庫內容一致，待使用者決定是否 commit。
+
+## 2026-07-11 - Web 雙模式認證（telegram + password）
+
+- [x] `WEB_AUTH_MODE=telegram|password` + `LOGIN_WEB_PATH` 環境變數切換。
+- [x] 獨立 `web_users` 表 + scrypt 密碼雜湊 + 虛擬 tg_user_id（`WEB_USER_TG_ID_OFFSET=9_000_000_000`）。
+- [x] 首次引導 setup 頁、login 分叉、改密碼 API；Bot 在 password 模式不啟動。
+- [x] 三方言 DDL 同步（SQLite/PG/MySQL）；backup 表數 10→11。
+- [x] 驗證：tsc 零錯，vitest 443 tests 全綠。
+- [ ] 建議（非阻塞）：前端密碼修改 UI；管理員管理 web_user API+UI；webAuthMiddleware password 模式重查 is_admin。
+
+## 2026-07-11 - agent 資料夾閱讀接手
+
+- [x] 閱讀 `agent/` 全部 5 檔：memory / deep_todos / 項目表 / stage2-async-migration / db-cloud-migration-design。
+- [x] 發現 deep_todos 與 項目表 停在 07-09，落後 memory 的 07-10/11 完成狀態；已同步更新。
+- [x] 正式接手，後續以 memory 為最新決策來源，deep_todos 追任務，項目表追結構。

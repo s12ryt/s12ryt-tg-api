@@ -2,6 +2,11 @@
 
 所有版本變更記錄。本檔案由 `npm run release` 自動維護。
 
+## [1.10.0] - 2026-07-11
+
+### ✨ Features
+- dual-mode auth with UUID-protected panel path (92cb486)
+
 ## [1.9.1] - 2026-07-10
 
 ### ✨ Features

@@ -1,9 +1,9 @@
 {
   "name": "s12ryt-nodejs-plugin-example",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
-  "description": "Detailed Node.js-only plugin example for s12ryt-tg-api",
+  "description": "Comprehensive Node.js plugin example for s12ryt-tg-api — showcases all 6 plugin services + multi-service scenarios",
   "main": "dist/index.js",
   "scripts": {
     "check": "node --check dist/index.js"

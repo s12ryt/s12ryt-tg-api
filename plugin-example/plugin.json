@@ -1,14 +1,38 @@
 {
   "name": "nodejs-example",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "nodeOnly": true,
   "main": "dist/index.js",
   "routes": [
     "GET /plugins/nodejs-example/status",
-    "GET /plugins/nodejs-example/me",
-    "POST /plugins/nodejs-example/echo"
+    "GET /plugins/nodejs-example/dashboard",
+    "GET /plugins/nodejs-example/auth/me",
+    "GET /plugins/nodejs-example/storage",
+    "GET /plugins/nodejs-example/storage/:key",
+    "POST /plugins/nodejs-example/storage/:key",
+    "DELETE /plugins/nodejs-example/storage/:key",
+    "POST /plugins/nodejs-example/events/emit",
+    "GET /plugins/nodejs-example/events/listeners/:name",
+    "GET /plugins/nodejs-example/events/log",
+    "POST /plugins/nodejs-example/scheduler/timeout",
+    "POST /plugins/nodejs-example/scheduler/interval",
+    "DELETE /plugins/nodejs-example/scheduler/:id",
+    "GET /plugins/nodejs-example/scheduler/active",
+    "GET /plugins/nodejs-example/providers/list",
+    "GET /plugins/nodejs-example/providers/models",
+    "GET /plugins/nodejs-example/providers/lookup/:model",
+    "GET /plugins/nodejs-example/providers/:id/prices",
+    "GET /plugins/nodejs-example/providers/mappings",
+    "GET /plugins/nodejs-example/db/me",
+    "GET /plugins/nodejs-example/db/keys",
+    "GET /plugins/nodejs-example/db/limits",
+    "GET /plugins/nodejs-example/db/usage/daily",
+    "GET /plugins/nodejs-example/db/usage/monthly",
+    "GET /plugins/nodejs-example/db/models/allowed"
   ],
   "commands": [
-    "/plugin_example"
+    "/plugin_example",
+    "/my_usage",
+    "/plugin_data"
   ]
 }
