@@ -15,6 +15,15 @@
   <!-- 登入畫面（多模式） -->
   <div id="login-screen" class="login-screen">
     <div class="login-card">
+      <!-- 品牌標誌（三種模式共用） -->
+      <div class="login-brand" aria-hidden="true">
+        <svg class="login-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+          <path d="M2 17l10 5 10-5"/>
+          <path d="M2 12l10 5 10-5"/>
+        </svg>
+      </div>
+
       <!-- 載入中（telegram 模式 OTP 驗證 / 初始化偵測） -->
       <div id="login-loading">
         <div class="spinner" aria-label="載入中"></div>
@@ -24,39 +33,64 @@
 
       <!-- 帳密登入表單（password 模式） -->
       <div id="login-password" class="hidden">
-        <h2>S12RYT 配置面板</h2>
+        <h2>歡迎回來</h2>
+        <p class="login-subtitle">登入 S12RYT 配置面板</p>
         <form id="login-form" autocomplete="on">
-          <div class="form-field">
-            <label for="login-username">帳號</label>
-            <input type="text" id="login-username" name="username" autocomplete="username" required>
+          <div class="login-field">
+            <svg class="field-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
+            </svg>
+            <input type="text" id="login-username" name="username" autocomplete="username" placeholder="帳號" aria-label="帳號" required>
           </div>
-          <div class="form-field">
-            <label for="login-password-input">密碼</label>
-            <input type="password" id="login-password-input" name="password" autocomplete="current-password" required>
+          <div class="login-field">
+            <svg class="field-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+            </svg>
+            <input type="password" id="login-password-input" name="password" autocomplete="current-password" placeholder="密碼" aria-label="密碼" required>
+            <button type="button" class="pwd-toggle" data-target="login-password-input" aria-label="顯示或隱藏密碼">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
           </div>
-          <button type="submit" class="btn-primary" id="login-submit">登入</button>
+          <button type="submit" class="btn-primary login-btn" id="login-submit">登入</button>
         </form>
         <p id="login-password-msg" class="login-error"></p>
       </div>
 
       <!-- 首次管理員引導（password 模式 + 無用戶） -->
       <div id="login-setup" class="hidden">
+        <div class="setup-badge" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+          </svg>
+        </div>
         <h2>初始設定</h2>
-        <p class="login-hint">建立第一個管理員帳號</p>
+        <p class="login-hint">建立第一個管理員帳號以開始使用</p>
         <form id="setup-form" autocomplete="off">
-          <div class="form-field">
-            <label for="setup-username">管理員帳號</label>
-            <input type="text" id="setup-username" required placeholder="3-64 字元，英數、底線、連字號">
+          <div class="login-field">
+            <svg class="field-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
+            </svg>
+            <input type="text" id="setup-username" required placeholder="管理員帳號（3-64 字元）" aria-label="管理員帳號">
           </div>
-          <div class="form-field">
-            <label for="setup-password">密碼</label>
-            <input type="password" id="setup-password" required placeholder="至少 8 個字元">
+          <div class="login-field">
+            <svg class="field-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+            </svg>
+            <input type="password" id="setup-password" required placeholder="密碼（至少 8 個字元）" aria-label="密碼">
+            <button type="button" class="pwd-toggle" data-target="setup-password" aria-label="顯示或隱藏密碼">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
           </div>
-          <div class="form-field">
-            <label for="setup-password-confirm">確認密碼</label>
-            <input type="password" id="setup-password-confirm" required>
+          <div class="login-field">
+            <svg class="field-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+            </svg>
+            <input type="password" id="setup-password-confirm" required placeholder="確認密碼" aria-label="確認密碼">
+            <button type="button" class="pwd-toggle" data-target="setup-password-confirm" aria-label="顯示或隱藏密碼">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
           </div>
-          <button type="submit" class="btn-primary" id="setup-submit">建立管理員</button>
+          <button type="submit" class="btn-primary login-btn" id="setup-submit">建立管理員</button>
         </form>
         <p id="setup-msg" class="login-error"></p>
       </div>

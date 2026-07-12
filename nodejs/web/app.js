@@ -3293,6 +3293,17 @@
       });
     }
 
+    // 密碼顯示/隱藏切換（事件委託，涵蓋 login + setup 所有 pwd-toggle 按鈕）
+    document.addEventListener("click", (e) => {
+      const btn = e.target.closest(".pwd-toggle");
+      if (!btn) return;
+      const input = document.getElementById(btn.dataset.target);
+      if (!input) return;
+      const show = input.type === "password";
+      input.type = show ? "text" : "password";
+      btn.setAttribute("aria-label", show ? "隱藏密碼" : "顯示密碼");
+    });
+
     // ESC 關閉 modal / mobile nav
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape") {
