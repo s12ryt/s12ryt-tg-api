@@ -4,7 +4,7 @@ import {
   type Conversation,
   createConversation,
 } from "@grammyjs/conversations";
-import { getEffectiveApiUrl } from "../../apiUrl.js";
+import { getEffectiveApiUrlWithSource } from "../../apiUrl.js";
 import {
   getUserByTgId,
   addUser,
@@ -91,8 +91,16 @@ async function handleStart(ctx: MyContext): Promise<void> {
 // ========================
 
 async function handleUrl(ctx: MyContext): Promise<void> {
-  const url = await getEffectiveApiUrl();
-  await ctx.reply(`API URL: ${url}`);
+  const info = await getEffectiveApiUrlWithSource();
+  const lines = [`API URL: ${info.url}`];
+  if (info.source === "tunnel") {
+    lines.push("");
+    lines.push("⚠️ 此 URL 來自 Cloudflare 快速隧道，服務重啟後會變更，請勿長期寫死在用戶端。");
+  } else if (info.source === "tunnel-pending") {
+    lines.push("");
+    lines.push("⏳ 隧道連線中，目前顯示的是預設 URL，請稍後幾秒後再試。");
+  }
+  await ctx.reply(lines.join("\n"));
 }
 
 // ========================

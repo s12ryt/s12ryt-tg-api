@@ -1,7 +1,7 @@
 import { Bot, Context } from "grammy";
 import { Conversation, ConversationFlavor, createConversation } from "@grammyjs/conversations";
 import { config } from "../../config.js";
-import { getEffectiveApiUrl } from "../../apiUrl.js";
+import { getRawConfiguredApiUrl, getEffectiveApiUrlWithSource } from "../../apiUrl.js";
 import { webButton } from "./webHandlers.js";
 import {
   addProvider,
@@ -18,6 +18,7 @@ import {
   getUsageByProvider,
   getUsageByUser,
   setSetting,
+  deleteSetting,
   batchUpsertModelPrices,
   getModelPricesByProvider,
   getKeysByUser,
@@ -1097,20 +1098,63 @@ async function subUrlConversation(
   conversation: MyConversation,
   ctx: MyContext
 ): Promise<void> {
-  const currentUrl = await getEffectiveApiUrl();
-  await ctx.reply(`目前 API URL：${currentUrl}\n\n請輸入新的 URL：`, {
+  // 顯示「管理員手動設定的值」（可能是 null=未設定）和「目前實際使用值」
+  // 兩者分開，避免管理員誤把 tunnel URL 當成持久設定。
+  const rawConfigured = await conversation.external(() => getRawConfiguredApiUrl());
+  const info = await conversation.external(() => getEffectiveApiUrlWithSource());
+  const lines: string[] = [`目前實際使用 API URL：${info.url}`];
+  if (info.source === "tunnel") {
+    lines.push("⚠️ 此 URL 來自 Cloudflare 快速隧道，重啟後會變更。");
+  } else if (info.source === "tunnel-pending") {
+    lines.push("⏳ 隧道連線中，暫時顯示預設 URL，請稍後再試。");
+  } else if (info.source === "default") {
+    lines.push("ℹ️ 未設定且無隧道，使用 DEFAULT_API_URL。");
+  }
+  lines.push(
+    rawConfigured
+      ? `管理員手動設定值：${rawConfigured}（會覆蓋自動來源）`
+      : "管理員手動設定值：（未設定，使用自動來源）"
+  );
+  lines.push("");
+  lines.push("請選擇操作：");
+  lines.push("  1. 設定新的 URL");
+  lines.push("  2. 清除手動設定（回復 tunnel / 預設）");
+  lines.push("  其他輸入取消");
+
+  await ctx.reply(lines.join("\n"), {
     reply_markup: await webButton(ctx.from!.id, "settings"),
   });
 
   ctx = await conversation.wait();
-  const newUrl = ctx.msg?.text?.trim();
+  const choice = ctx.msg?.text?.trim() ?? "";
+
+  if (choice === "2") {
+    try {
+      await conversation.external(async () => { await deleteSetting("api_url"); });
+      await ctx.reply("✅ 已清除手動 API URL 設定，將使用 tunnel / 預設 URL。");
+    } catch (err) {
+      await ctx.reply(`❌ 清除失敗：${(err as Error).message}`);
+    }
+    return;
+  }
+
+  if (choice !== "1") {
+    await ctx.reply("已取消。");
+    return;
+  }
+
+  await ctx.reply("請輸入新的 API URL：");
+  ctx = await conversation.wait();
+  const newUrl = ctx.msg?.text?.trim() ?? "";
   if (!newUrl) {
     await ctx.reply("❌ URL 不能為空，已取消。");
     return;
   }
 
   try {
-    await conversation.external(async () => { await setSetting("api_url", newUrl); });
+    await conversation.external(async () => {
+      await setSetting("api_url", newUrl.replace(/\/+$/, ""));
+    });
     await ctx.reply(`✅ API URL 已更新為：${newUrl}`);
   } catch (err) {
     await ctx.reply(`❌ 更新失敗：${(err as Error).message}`);

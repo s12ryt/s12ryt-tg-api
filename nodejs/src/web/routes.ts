@@ -68,7 +68,7 @@ import {
 import { hashPassword, verifyPassword, validatePasswordStrength, validateUsername } from "./password.js";
 import { getPanelPath, regenerateWebPanelUuid } from "./panelUuid.js";
 import { config } from "../config.js";
-import { getEffectiveApiUrl } from "../apiUrl.js";
+import { getEffectiveApiUrl, getRawConfiguredApiUrl, getEffectiveApiUrlWithSource } from "../apiUrl.js";
 import { getTunnelUrl } from "../tunnel.js";
 import { parseApiKeys } from "../api/keySelector.js";
 import {
@@ -112,7 +112,7 @@ import {
   // groups
   getUserGroups, addUserGroup, updateUserGroup, deleteUserGroup, getDefaultUserGroup, setDefaultUserGroup,
   // settings
-  getSetting, setSetting,
+  getSetting, setSetting, deleteSetting,
   // cache
   getAllCachedModelNames,
   // model mappings
@@ -1455,12 +1455,21 @@ router.get("/api/admin/usage", async (req: Request, res: Response) => {
 
 /** GET /web/api/admin/settings — 系統設定 */
 router.get("/api/admin/settings", async (_req: Request, res: Response) => {
-  const apiUrl = await getEffectiveApiUrl();
+  const rawApiUrl = await getRawConfiguredApiUrl();
+  const info = await getEffectiveApiUrlWithSource();
   const kaEnabled = (await getSetting("keepalive_enabled")) === "1";
   const kaInterval = Number(await getSetting("keepalive_interval")) || 5;
   res.json({
     settings: {
-      api_url: apiUrl,
+      // raw admin-configured value (null when cleared / never set). Front-end
+      // forms should bind to this so saving without changes doesn't strand a
+      // tunnel URL into the persistent settings.
+      api_url: rawApiUrl,
+      // computed value actually shown to users (= raw ?? tunnel ?? default).
+      effective_api_url: info.url,
+      // provenance hint for the UI: "configured" | "tunnel" | "tunnel-pending" | "default"
+      api_url_source: info.source,
+      // raw Cloudflare quick-tunnel URL or null (kept for backward compat).
       tunnel_url: getTunnelUrl(),
       provider_default_user_agent: await getProviderDefaultUserAgent(),
       is_cloud_db: isCloudDatabase(),
@@ -1475,7 +1484,14 @@ router.put("/api/admin/settings", async (req: Request, res: Response) => {
   const { api_url, provider_default_user_agent, keepalive_enabled, keepalive_interval } = req.body;
 
   if (api_url !== undefined) {
-    await setSetting("api_url", String(api_url).replace(/\/+$/, ""));
+    // Empty/whitespace string means "clear back to auto" (tunnel/default).
+    // Non-empty string is trimmed of trailing slashes and stored verbatim.
+    const trimmed = typeof api_url === "string" ? api_url.trim().replace(/\/+$/, "") : "";
+    if (trimmed) {
+      await setSetting("api_url", trimmed);
+    } else {
+      await deleteSetting("api_url");
+    }
   }
 
   if (provider_default_user_agent !== undefined) {
