@@ -193,7 +193,7 @@ async function recordUsageAndCost(
     });
     if (isCodingMode && auth.userId) {
       try {
-        incrementCodingSessionStats(parseInt(auth.userId), inTokens, outTokens, cost.input_cost, cost.output_cost, modelName);
+        incrementCodingSessionStats(parseInt(auth.userId, 10), inTokens, outTokens, cost.input_cost, cost.output_cost, modelName);
       } catch (e) {
         console.error("[coding-stats] Failed to increment:", e);
       }

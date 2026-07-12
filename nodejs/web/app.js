@@ -3274,7 +3274,7 @@
         $("#acc-new-pwd").value = "";
         $("#acc-confirm-pwd").value = "";
         msgEl.textContent = "密碼已更新，其他設備的登入狀態已失效";
-        msgEl.style.color = "#22C55E";
+        msgEl.style.color = "var(--success)";
       } catch (err) {
         msgEl.textContent = err.message || "更新失敗";
         msgEl.style.color = "var(--accent-red)";
@@ -3323,7 +3323,7 @@
                     '<td style="padding:8px 12px;">' + esc(u.id) + '</td>' +
                     '<td style="padding:8px 12px;font-family:var(--mono);">' + esc(u.username) + '</td>' +
                     '<td style="padding:8px 12px;">' + (isAdmin ? '<span style="color:var(--accent);">管理員</span>' : '一般') + '</td>' +
-                    '<td style="padding:8px 12px;">' + (isActive ? '<span style="color:#22C55E;">啟用</span>' : '<span style="color:var(--accent-red);">停用</span>') + '</td>' +
+                    '<td style="padding:8px 12px;">' + (isActive ? '<span style="color:var(--success);">啟用</span>' : '<span style="color:var(--accent-red);">停用</span>') + '</td>' +
                     '<td style="padding:8px 12px;">' + fmtDate(u.created_at) + '</td>' +
                     '<td style="padding:8px 12px;white-space:nowrap;">' +
                       '<button class="btn btn-ghost btn-sm" data-action="toggle" data-uid="' + uid + '" data-active="' + (isActive ? "1" : "0") + '">' + (isActive ? "停用" : "啟用") + '</button> ' +
