@@ -73,7 +73,6 @@ import { getTunnelUrl } from "../tunnel.js";
 import { parseApiKeys } from "../api/keySelector.js";
 import {
   detectApiProtocols,
-  detectProtocolsNoAuth,
   fetchProviderModels,
   fetchModelsNoAuth,
   fetchModelsPricing,
@@ -990,17 +989,17 @@ router.get("/api/url", async (_req: Request, res: Response) => {
 router.use("/api/admin", requireAdmin);
 
 /** GET /web/api/admin/system-usage — 系統與程式資源佔用 */
-router.get("/api/admin/system-usage", async (_req: Request, res: Response) => {
+router.get("/api/admin/system-usage", requireAdmin, async (_req: Request, res: Response) => {
   res.json({ usage: getSystemUsageSnapshot() });
 });
 
 /** GET /web/api/admin/plugins — Node.js 插件列表 */
-router.get("/api/admin/plugins", async (_req: Request, res: Response) => {
+router.get("/api/admin/plugins", requireAdmin, async (_req: Request, res: Response) => {
   res.json({ plugins: await listNodeJsPlugins() });
 });
 
 /** POST /web/api/admin/plugins/upload — 從 Web 上傳安裝 Node.js 插件 */
-router.post("/api/admin/plugins/upload", async (req: Request, res: Response) => {
+router.post("/api/admin/plugins/upload", requireAdmin, async (req: Request, res: Response) => {
   const { filename, content } = req.body as { filename?: unknown; content?: unknown };
   if (typeof filename !== "string" || typeof content !== "string") {
     res.status(400).json({ error: "缺少必要欄位: filename, content" });
@@ -1017,7 +1016,7 @@ router.post("/api/admin/plugins/upload", async (req: Request, res: Response) => 
 });
 
 /** POST /web/api/admin/plugins/github — 從 GitHub 連結安裝 Node.js 插件 */
-router.post("/api/admin/plugins/github", async (req: Request, res: Response) => {
+router.post("/api/admin/plugins/github", requireAdmin, async (req: Request, res: Response) => {
   try {
     const source = await resolveGitHubPluginSource((req.body as { url?: unknown }).url);
     const content = await fetchTextWithLimit(source.rawUrl);
@@ -1037,7 +1036,7 @@ router.post("/api/admin/plugins/github", async (req: Request, res: Response) => 
 // --- Providers ---
 
 /** GET /web/api/admin/providers — 供應商列表 */
-router.get("/api/admin/providers", async (_req: Request, res: Response) => {
+router.get("/api/admin/providers", requireAdmin, async (_req: Request, res: Response) => {
   const providers = await getProviders(false);
   // 解析 api_key 為陣列但不回傳完整 key
   res.json({
@@ -1055,7 +1054,7 @@ router.get("/api/admin/providers", async (_req: Request, res: Response) => {
 });
 
 /** POST /web/api/admin/providers — 新增供應商 */
-router.post("/api/admin/providers", async (req: Request, res: Response) => {
+router.post("/api/admin/providers", requireAdmin, async (req: Request, res: Response) => {
   const { name, api_type, base_url, api_key, user_agent, models, model_prices, input_price, output_price, key_strategy } = req.body;
   if (!name || !api_type || !base_url) {
     res.status(400).json({ error: "缺少必要欄位: name, api_type, base_url" });
@@ -1113,7 +1112,7 @@ router.post("/api/admin/providers", async (req: Request, res: Response) => {
 });
 
 /** PUT /web/api/admin/providers/:id — 更新供應商 */
-router.put("/api/admin/providers/:id", async (req: Request, res: Response) => {
+router.put("/api/admin/providers/:id", requireAdmin, async (req: Request, res: Response) => {
   const id = parseInt(req.params.id, 10);
   if (isNaN(id)) {
     res.status(400).json({ error: "無效的 ID" });
@@ -1171,7 +1170,7 @@ router.put("/api/admin/providers/:id", async (req: Request, res: Response) => {
 });
 
 /** DELETE /web/api/admin/providers — 刪除供應商（body: {ids:[]}） */
-router.delete("/api/admin/providers", async (req: Request, res: Response) => {
+router.delete("/api/admin/providers", requireAdmin, async (req: Request, res: Response) => {
   const { ids } = req.body;
   if (!Array.isArray(ids) || ids.length === 0) {
     res.status(400).json({ error: "需要 ids 陣列" });
@@ -1187,7 +1186,7 @@ router.delete("/api/admin/providers", async (req: Request, res: Response) => {
 });
 
 /** GET /web/api/admin/provider-prices/:id — 供應商的模型定價 */
-router.get("/api/admin/provider-prices/:id", async (req: Request, res: Response) => {
+router.get("/api/admin/provider-prices/:id", requireAdmin, async (req: Request, res: Response) => {
   const providerId = parseInt(req.params.id, 10);
   if (isNaN(providerId)) {
     res.status(400).json({ error: "無效的 ID" });
@@ -1198,7 +1197,7 @@ router.get("/api/admin/provider-prices/:id", async (req: Request, res: Response)
 });
 
 /** PUT /web/api/admin/provider-prices/:id — 批量更新定價 */
-router.put("/api/admin/provider-prices/:id", async (req: Request, res: Response) => {
+router.put("/api/admin/provider-prices/:id", requireAdmin, async (req: Request, res: Response) => {
   const providerId = parseInt(req.params.id, 10);
   if (isNaN(providerId)) {
     res.status(400).json({ error: "無效的 ID" });
@@ -1225,7 +1224,7 @@ router.put("/api/admin/provider-prices/:id", async (req: Request, res: Response)
 // --- Users ---
 
 /** GET /web/api/admin/users — 用戶列表（排除管理員自己） */
-router.get("/api/admin/users", async (_req: Request, res: Response) => {
+router.get("/api/admin/users", requireAdmin, async (_req: Request, res: Response) => {
   const users = await getUsers();
   res.json({
     users: users.map((u) => ({
@@ -1236,7 +1235,7 @@ router.get("/api/admin/users", async (_req: Request, res: Response) => {
 });
 
 /** POST /web/api/admin/users — 新增用戶 */
-router.post("/api/admin/users", async (req: Request, res: Response) => {
+router.post("/api/admin/users", requireAdmin, async (req: Request, res: Response) => {
   const { tgUserId, username } = req.body;
   if (!tgUserId || isNaN(parseInt(tgUserId, 10))) {
     res.status(400).json({ error: "需要有效的 tgUserId" });
@@ -1268,7 +1267,7 @@ router.post("/api/admin/users", async (req: Request, res: Response) => {
 });
 
 /** PUT /web/api/admin/users/:id/status — 更新用戶狀態 */
-router.put("/api/admin/users/:id/status", async (req: Request, res: Response) => {
+router.put("/api/admin/users/:id/status", requireAdmin, async (req: Request, res: Response) => {
   const id = parseInt(req.params.id, 10);
   if (isNaN(id)) {
     res.status(400).json({ error: "無效的 ID" });
@@ -1285,7 +1284,7 @@ router.put("/api/admin/users/:id/status", async (req: Request, res: Response) =>
 });
 
 /** PUT /web/api/admin/users/:id/tg-id — 更新用戶 TG ID */
-router.put("/api/admin/users/:id/tg-id", async (req: Request, res: Response) => {
+router.put("/api/admin/users/:id/tg-id", requireAdmin, async (req: Request, res: Response) => {
   const id = parseInt(req.params.id, 10);
   if (isNaN(id)) {
     res.status(400).json({ error: "無效的 ID" });
@@ -1311,7 +1310,7 @@ router.put("/api/admin/users/:id/tg-id", async (req: Request, res: Response) => 
 });
 
 /** DELETE /web/api/admin/users/:id — 刪除用戶 */
-router.delete("/api/admin/users/:id", async (req: Request, res: Response) => {
+router.delete("/api/admin/users/:id", requireAdmin, async (req: Request, res: Response) => {
   const id = parseInt(req.params.id, 10);
   if (isNaN(id)) {
     res.status(400).json({ error: "無效的 ID" });
@@ -1327,7 +1326,7 @@ router.delete("/api/admin/users/:id", async (req: Request, res: Response) => {
 });
 
 /** GET /web/api/admin/users/:id/keys — 用戶的 API Keys */
-router.get("/api/admin/users/:id/keys", async (req: Request, res: Response) => {
+router.get("/api/admin/users/:id/keys", requireAdmin, async (req: Request, res: Response) => {
   const id = parseInt(req.params.id, 10);
   if (isNaN(id)) {
     res.status(400).json({ error: "無效的 ID" });
@@ -1343,7 +1342,7 @@ router.get("/api/admin/users/:id/keys", async (req: Request, res: Response) => {
 });
 
 /** DELETE /web/api/admin/users/:id/keys/:keyId — 刪除用戶 API Key */
-router.delete("/api/admin/users/:id/keys/:keyId", async (req: Request, res: Response) => {
+router.delete("/api/admin/users/:id/keys/:keyId", requireAdmin, async (req: Request, res: Response) => {
   const id = parseInt(req.params.id, 10);
   const keyId = parseInt(req.params.keyId, 10);
   if (isNaN(id) || isNaN(keyId)) {
@@ -1372,7 +1371,7 @@ router.delete("/api/admin/users/:id/keys/:keyId", async (req: Request, res: Resp
 });
 
 /** GET /web/api/admin/users/:id/limits — 用戶限制詳情 */
-router.get("/api/admin/users/:id/limits", async (req: Request, res: Response) => {
+router.get("/api/admin/users/:id/limits", requireAdmin, async (req: Request, res: Response) => {
   const id = parseInt(req.params.id, 10);
   if (isNaN(id)) {
     res.status(400).json({ error: "無效的 ID" });
@@ -1390,7 +1389,7 @@ router.get("/api/admin/users/:id/limits", async (req: Request, res: Response) =>
 });
 
 /** PUT /web/api/admin/users/:id/limits — 設定用戶分組+覆蓋 */
-router.put("/api/admin/users/:id/limits", async (req: Request, res: Response) => {
+router.put("/api/admin/users/:id/limits", requireAdmin, async (req: Request, res: Response) => {
   const id = parseInt(req.params.id, 10);
   if (isNaN(id)) {
     res.status(400).json({ error: "無效的 ID" });
@@ -1432,7 +1431,7 @@ router.put("/api/admin/users/:id/limits", async (req: Request, res: Response) =>
 });
 
 /** GET /web/api/admin/users/:id/restrictions — 用戶模型限制 */
-router.get("/api/admin/users/:id/restrictions", async (req: Request, res: Response) => {
+router.get("/api/admin/users/:id/restrictions", requireAdmin, async (req: Request, res: Response) => {
   const id = parseInt(req.params.id, 10);
   if (isNaN(id)) {
     res.status(400).json({ error: "無效的 ID" });
@@ -1443,7 +1442,7 @@ router.get("/api/admin/users/:id/restrictions", async (req: Request, res: Respon
 });
 
 /** PUT /web/api/admin/users/:id/restrictions — 設定用戶模型限制 */
-router.put("/api/admin/users/:id/restrictions", async (req: Request, res: Response) => {
+router.put("/api/admin/users/:id/restrictions", requireAdmin, async (req: Request, res: Response) => {
   const id = parseInt(req.params.id, 10);
   if (isNaN(id)) {
     res.status(400).json({ error: "無效的 ID" });
@@ -1473,7 +1472,7 @@ router.put("/api/admin/users/:id/restrictions", async (req: Request, res: Respon
 // --- API Key Limits ---
 
 /** GET /web/api/admin/keys/:id/limits — API Key 限制詳情 */
-router.get("/api/admin/keys/:id/limits", async (req: Request, res: Response) => {
+router.get("/api/admin/keys/:id/limits", requireAdmin, async (req: Request, res: Response) => {
   const id = parseInt(req.params.id, 10);
   if (isNaN(id)) {
     res.status(400).json({ error: "無效的 ID" });
@@ -1488,7 +1487,7 @@ router.get("/api/admin/keys/:id/limits", async (req: Request, res: Response) => 
 });
 
 /** PUT /web/api/admin/keys/:id/limits — 設定 API Key 覆蓋 */
-router.put("/api/admin/keys/:id/limits", async (req: Request, res: Response) => {
+router.put("/api/admin/keys/:id/limits", requireAdmin, async (req: Request, res: Response) => {
   const id = parseInt(req.params.id, 10);
   if (isNaN(id)) {
     res.status(400).json({ error: "無效的 ID" });
@@ -1526,13 +1525,13 @@ router.put("/api/admin/keys/:id/limits", async (req: Request, res: Response) => 
 // --- Groups ---
 
 /** GET /web/api/admin/groups — 用戶分組列表 */
-router.get("/api/admin/groups", async (_req: Request, res: Response) => {
+router.get("/api/admin/groups", requireAdmin, async (_req: Request, res: Response) => {
   const groups = await getUserGroups();
   res.json({ groups });
 });
 
 /** POST /web/api/admin/groups — 新增分組 */
-router.post("/api/admin/groups", async (req: Request, res: Response) => {
+router.post("/api/admin/groups", requireAdmin, async (req: Request, res: Response) => {
   const { name, display_name, ...limits } = req.body;
   if (!name) {
     res.status(400).json({ error: "需要 name" });
@@ -1548,7 +1547,7 @@ router.post("/api/admin/groups", async (req: Request, res: Response) => {
 });
 
 /** PUT /web/api/admin/groups/:id — 更新分組 */
-router.put("/api/admin/groups/:id", async (req: Request, res: Response) => {
+router.put("/api/admin/groups/:id", requireAdmin, async (req: Request, res: Response) => {
   const id = parseInt(req.params.id, 10);
   if (isNaN(id)) {
     res.status(400).json({ error: "無效的 ID" });
@@ -1564,7 +1563,7 @@ router.put("/api/admin/groups/:id", async (req: Request, res: Response) => {
 });
 
 /** DELETE /web/api/admin/groups/:id — 刪除分組 */
-router.delete("/api/admin/groups/:id", async (req: Request, res: Response) => {
+router.delete("/api/admin/groups/:id", requireAdmin, async (req: Request, res: Response) => {
   const id = parseInt(req.params.id, 10);
   if (isNaN(id)) {
     res.status(400).json({ error: "無效的 ID" });
@@ -1585,7 +1584,7 @@ router.delete("/api/admin/groups/:id", async (req: Request, res: Response) => {
 });
 
 /** PUT /web/api/admin/groups/:id/default — 設為預設分組 */
-router.put("/api/admin/groups/:id/default", async (req: Request, res: Response) => {
+router.put("/api/admin/groups/:id/default", requireAdmin, async (req: Request, res: Response) => {
   const id = parseInt(req.params.id, 10);
   if (isNaN(id)) {
     res.status(400).json({ error: "無效的 ID" });
@@ -1604,7 +1603,7 @@ router.put("/api/admin/groups/:id/default", async (req: Request, res: Response) 
 // --- Usage (admin) ---
 
 /** GET /web/api/admin/usage — 全部用量統計 */
-router.get("/api/admin/usage", async (req: Request, res: Response) => {
+router.get("/api/admin/usage", requireAdmin, async (req: Request, res: Response) => {
   const { byUser } = req.query;
 
   if (byUser) {
@@ -1624,7 +1623,7 @@ router.get("/api/admin/usage", async (req: Request, res: Response) => {
 // --- Settings ---
 
 /** GET /web/api/admin/settings — 系統設定 */
-router.get("/api/admin/settings", async (_req: Request, res: Response) => {
+router.get("/api/admin/settings", requireAdmin, async (_req: Request, res: Response) => {
   const rawApiUrl = await getRawConfiguredApiUrl();
   const info = await getEffectiveApiUrlWithSource();
   const kaEnabled = (await getSetting("keepalive_enabled")) === "1";
@@ -1650,7 +1649,7 @@ router.get("/api/admin/settings", async (_req: Request, res: Response) => {
 });
 
 /** PUT /web/api/admin/settings — 更新系統設定 */
-router.put("/api/admin/settings", async (req: Request, res: Response) => {
+router.put("/api/admin/settings", requireAdmin, async (req: Request, res: Response) => {
   const { api_url, provider_default_user_agent, keepalive_enabled, keepalive_interval } = req.body;
 
   if (api_url !== undefined) {
@@ -1695,34 +1694,12 @@ router.put("/api/admin/settings", async (req: Request, res: Response) => {
 // API Test — 協議偵測
 // ---------------------------------------------------------------------------
 
-/** POST /web/api/admin/api-test — 偵測 API 協議（有/無 API Key） */
-router.post("/api/admin/api-test", async (req: Request, res: Response) => {
-  const { baseUrl, apiKey } = req.body;
-  if (!baseUrl || typeof baseUrl !== "string") {
-    res.status(400).json({ error: "缺少 baseUrl" });
-    return;
-  }
-
-  try {
-    if (apiKey && typeof apiKey === "string") {
-      const result = await detectApiProtocols(baseUrl, apiKey);
-      res.json({ result, usedAuth: true });
-    } else {
-      const { result, allUnreachable } = await detectProtocolsNoAuth(baseUrl);
-      res.json({ result, usedAuth: false, allUnreachable });
-    }
-  } catch (err) {
-    console.error("[web] api-test error:", err);
-    res.status(500).json({ error: "偵測失敗：" + (err instanceof Error ? err.message : String(err)) });
-  }
-});
-
 // ---------------------------------------------------------------------------
 // Protocol Test — 用真實模型測試全部協議
 // ---------------------------------------------------------------------------
 
 /** POST /web/api/admin/protocol-test — 用真實模型測試 4 種 API 協議 */
-router.post("/api/admin/protocol-test", async (req: Request, res: Response) => {
+router.post("/api/admin/protocol-test", requireAdmin, async (req: Request, res: Response) => {
   const { baseUrl, apiKey, model, message } = req.body;
   if (!baseUrl || typeof baseUrl !== "string") {
     res.status(400).json({ error: "缺少 baseUrl" });
@@ -1861,7 +1838,7 @@ router.post("/api/admin/protocol-test", async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 
 /** POST /web/api/admin/model-catch — 抓取模型列表（有/無 API Key） */
-router.post("/api/admin/model-catch", async (req: Request, res: Response) => {
+router.post("/api/admin/model-catch", requireAdmin, async (req: Request, res: Response) => {
   const { baseUrl, apiKey, apiType } = req.body;
   if (!baseUrl || typeof baseUrl !== "string") {
     res.status(400).json({ error: "缺少 baseUrl" });
@@ -1886,26 +1863,8 @@ router.post("/api/admin/model-catch", async (req: Request, res: Response) => {
 // Provider Helper — 表單用：偵測協議 + 抓取模型 + 定價
 // ---------------------------------------------------------------------------
 
-/** POST /web/api/admin/provider-detect — 偵測協議（僅協議，不含模型/定價） */
-router.post("/api/admin/provider-detect", async (req: Request, res: Response) => {
-  const { baseUrl, apiKey } = req.body;
-  if (!baseUrl || typeof baseUrl !== "string") {
-    res.status(400).json({ error: "缺少 baseUrl" });
-    return;
-  }
-
-  try {
-    const key = apiKey || "";
-    const detection = await detectApiProtocols(baseUrl, key);
-    res.json({ detection });
-  } catch (err) {
-    console.error("[web] provider-detect error:", err);
-    res.status(500).json({ error: "偵測失敗：" + (err instanceof Error ? err.message : String(err)) });
-  }
-});
-
 /** POST /web/api/admin/provider-models — 抓取模型列表（需 API Key） */
-router.post("/api/admin/provider-models", async (req: Request, res: Response) => {
+router.post("/api/admin/provider-models", requireAdmin, async (req: Request, res: Response) => {
   const { baseUrl, apiKey, apiType } = req.body;
   if (!baseUrl || typeof baseUrl !== "string") {
     res.status(400).json({ error: "缺少 baseUrl" });
@@ -1926,7 +1885,7 @@ router.post("/api/admin/provider-models", async (req: Request, res: Response) =>
 });
 
 /** POST /web/api/admin/provider-pricing — 從 models.dev 取得模型定價 */
-router.post("/api/admin/provider-pricing", async (req: Request, res: Response) => {
+router.post("/api/admin/provider-pricing", requireAdmin, async (req: Request, res: Response) => {
   const { models } = req.body;
   if (!Array.isArray(models) || models.length === 0) {
     res.json({ pricing: {} });
@@ -1947,7 +1906,7 @@ router.post("/api/admin/provider-pricing", async (req: Request, res: Response) =
 });
 
 /** POST /web/api/admin/providers/:id/test-model — 按供應商 api_type 發測試請求 */
-router.post("/api/admin/providers/:id/test-model", async (req: Request, res: Response) => {
+router.post("/api/admin/providers/:id/test-model", requireAdmin, async (req: Request, res: Response) => {
   const providerId = Number(req.params.id);
   const { model, message } = req.body;
 
@@ -2083,7 +2042,7 @@ router.post("/api/admin/providers/:id/test-model", async (req: Request, res: Res
 // ---------------------------------------------------------------------------
 
 /** GET /web/api/admin/version — 當前版本 */
-router.get("/api/admin/version", async (_req: Request, res: Response) => {
+router.get("/api/admin/version", requireAdmin, async (_req: Request, res: Response) => {
   try {
     const version = getCurrentVersion();
     const workingDirClean = isWorkingDirClean();
@@ -2095,7 +2054,7 @@ router.get("/api/admin/version", async (_req: Request, res: Response) => {
 });
 
 /** GET /web/api/admin/check-update — 檢查更新 */
-router.get("/api/admin/check-update", async (_req: Request, res: Response) => {
+router.get("/api/admin/check-update", requireAdmin, async (_req: Request, res: Response) => {
   try {
     const result = await fetchAndCheckUpdate();
     res.json(result);
@@ -2106,7 +2065,7 @@ router.get("/api/admin/check-update", async (_req: Request, res: Response) => {
 });
 
 /** POST /web/api/admin/update — 執行更新 */
-router.post("/api/admin/update", async (req: Request, res: Response) => {
+router.post("/api/admin/update", requireAdmin, async (req: Request, res: Response) => {
   try {
     // 接受前端指定更新方法（auto / prebuilt / blue-green），非法值回退 auto
     const rawMethod = req.body?.method;
@@ -2127,7 +2086,7 @@ router.post("/api/admin/update", async (req: Request, res: Response) => {
 });
 
 /** POST /web/api/admin/restart — 重啟進程 */
-router.post("/api/admin/restart", async (req: Request, res: Response) => {
+router.post("/api/admin/restart", requireAdmin, async (req: Request, res: Response) => {
   try {
     const delay = typeof req.body?.delay === "number" ? req.body.delay : 2000;
     res.json({ ok: true, message: `將在 ${delay}ms 後重啟` });
@@ -2143,7 +2102,7 @@ router.post("/api/admin/restart", async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 
 /** GET /web/api/admin/backups — 取得可用備份列表 */
-router.get("/api/admin/backups", async (_req: Request, res: Response) => {
+router.get("/api/admin/backups", requireAdmin, async (_req: Request, res: Response) => {
   try {
     const backups = getBackupList();
     res.json({ backups });
@@ -2154,7 +2113,7 @@ router.get("/api/admin/backups", async (_req: Request, res: Response) => {
 });
 
 /** POST /web/api/admin/rollback — 回滾到最近的備份版本並重啟 */
-router.post("/api/admin/rollback", async (_req: Request, res: Response) => {
+router.post("/api/admin/rollback", requireAdmin, async (_req: Request, res: Response) => {
   try {
     res.json({ ok: true, message: "即將回滾到上一個版本並重啟" });
     rollbackAndRestart();
@@ -2167,12 +2126,12 @@ router.post("/api/admin/rollback", async (_req: Request, res: Response) => {
 // --- Model Mappings ---
 
 /** GET /web/api/admin/model-mappings — 模型映射列表 */
-router.get("/api/admin/model-mappings", async (_req: Request, res: Response) => {
+router.get("/api/admin/model-mappings", requireAdmin, async (_req: Request, res: Response) => {
   res.json({ mappings: await getModelMappings() });
 });
 
 /** PUT /web/api/admin/model-mappings — 批量替換模型映射 */
-router.put("/api/admin/model-mappings", async (req: Request, res: Response) => {
+router.put("/api/admin/model-mappings", requireAdmin, async (req: Request, res: Response) => {
   const { mappings } = req.body;
   if (!Array.isArray(mappings)) {
     res.status(400).json({ error: "mappings 必須是陣列" });
@@ -2202,7 +2161,7 @@ router.put("/api/admin/model-mappings", async (req: Request, res: Response) => {
 // --- API Logs ---
 
 /** GET /web/api/admin/api-logs — 近期 API 調用日誌 */
-router.get("/api/admin/api-logs", async (_req: Request, res: Response) => {
+router.get("/api/admin/api-logs", requireAdmin, async (_req: Request, res: Response) => {
   res.json({ logs: getApiLogs() });
 });
 
