@@ -10,6 +10,12 @@ export interface Config {
   ADMIN_ID: number | null;
   API_PORT: number;
   DATABASE_PATH: string;
+  /**
+   * Cloud database connection URL. When non-empty, its scheme selects a cloud
+   * driver (postgres:// / postgresql:// -> PostgreSQL; mysql:// / mariadb://
+   * -> MySQL) and {@link DATABASE_PATH} is ignored. Empty string -> SQLite.
+   */
+  DATABASE_URL: string;
   DEFAULT_API_URL: string;
   NODEJS_PLUGIN_PATHS: string[];
   MEMORY_LIMIT_MB: number | null;
@@ -61,6 +67,7 @@ export const config: Config = {
     : null,
   API_PORT: parseInt(process.env.API_PORT ?? "8000", 10),
   DATABASE_PATH: process.env.DATABASE_PATH ?? "./data/bot.db",
+  DATABASE_URL: process.env.DATABASE_URL?.trim() ?? "",
   DEFAULT_API_URL: process.env.DEFAULT_API_URL ?? "http://localhost:8000",
   NODEJS_PLUGIN_PATHS: parseListEnv(process.env.NODEJS_PLUGIN_PATHS),
   MEMORY_LIMIT_MB: getConfiguredMemoryMB(),

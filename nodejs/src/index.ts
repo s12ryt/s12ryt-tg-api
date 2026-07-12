@@ -117,8 +117,11 @@ async function main(): Promise<void> {
 
   // 2. Initialize database
   try {
-    await initDbAsync(config.DATABASE_PATH);
-    console.log(`[db] Database initialized at: ${config.DATABASE_PATH}`);
+    await initDbAsync(config.DATABASE_PATH, config.DATABASE_URL || undefined);
+    const dbDesc = config.DATABASE_URL
+      ? `cloud DB via ${config.DATABASE_URL.replace(/\/\/([^:]+):([^@]+)@/, "//$1:***@")}`
+      : `SQLite at ${config.DATABASE_PATH}`;
+    console.log(`[db] Database initialized: ${dbDesc}`);
   } catch (err: any) {
     console.error(`[db] Failed to initialize database: ${err.message}`);
     process.exit(1);
