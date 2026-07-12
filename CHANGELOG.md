@@ -2,6 +2,30 @@
 
 所有版本變更記錄。本檔案由 `npm run release` 自動維護。
 
+## [1.10.2] - 2026-07-12
+
+### ✨ Features
+- show effective api url and tunnel source hint in settings (79167d7)
+
+### 🐛 Bug Fixes
+- await closeDb in shutdown and fix keepalive timer cleanup (6674ca2)
+- cache global provider user-agent to fix missing await (582f0c3)
+- use ProviderHttpError class for upstream HTTP errors (27389fc)
+- redact password in migrate-db destination log (6dbcfe2)
+- guard parseInt and unify env var entry points (799a269)
+- route settings and bot commands through effective api url with source (252fc6e)
+- add api url source metadata and deleteSetting helper (92f29ec)
+- wire DATABASE_URL env var to driver factory (cf145cc)
+
+### ⚡ Performance
+- cache settings reads to avoid repeated DB round-trips (d51e9f4)
+
+### 📝 Documentation
+- record v1.10.2 tunnel url conflict and database url fix session (23b2337)
+
+### ✅ Tests
+- mock deleteSetting in web routes test (befa8b0)
+
 ## [1.10.1] - 2026-07-12
 
 ### ✨ Features
