@@ -252,3 +252,56 @@
 - **import 清理**：每個改動檔案都檢查 `getSetting`/`config` 是否有其他用途，只移除真正 unused 的：`userHandlers.ts` 移除 `getSetting`+`config`（全檔僅 handleUrl 用）；`adminHandlers.ts` 移除 `getSetting`（保留 `setSetting` + `config.ADMIN_ID` 4 處）；`webHandlers.ts` 移除 `getSetting`（保留 `config.LOGIN_WEB_PATH`）；`routes.ts` 保留 `config`（9 處）+ `getSetting`（3 處）。
 - **驗證**：`tsc --noEmit` 零錯；`vitest run` **444 passed, 38 skipped**（PG/MySQL CI only）, 0 failed。stderr 的 ENOENT 為既有 pluginServices temp-dir cleanup 已知行為，非本次回歸。
 - **未涵蓋**：token 模式（`CLOUDFLARE_TUNNEL=token` + `CLOUDFLARE_TOKEN`）的 tunnel URL 是固定的（由用戶 Cloudflare DNS 設定），不在 `on("url")` 事件中獲取，因此 `getTunnelUrl()` 在 token 模式下仍回 null——用戶需自行用 `/sub_url` 設定固定 URL。此次修復只解決 quick 模式。
+
+## 2026-07-12 - v1.10.2 修復：Tunnel URL 5 衝突 + P0 DATABASE_URL 根本 bug
+
+### 背景
+v1.10.1（commit `92c26cc`）push 後，挖出 5 個「左腦打右腦」設計衝突 + 1 個 P0 DB bug。本次完成全面修復，所有改動在 working copy（未 commit），驗證 tsc 零錯 + vitest 444 全綠。
+
+### P0：DATABASE_URL 根本 bug（重大）
+- **症狀**：`DATABASE_PATH` + `DATABASE_URL` 同時設定時仍用 SQLite。
+- **根本原因**：整個雲端 DB 遷移工程（階段 0-5）driver 實作完整，但**主入口從未實際讀取 `DATABASE_URL` 環境變數**：
+  - `config.ts` Config interface **沒有 `DATABASE_URL` 屬性**（只有 DATABASE_PATH）
+  - `index.ts` L120 `await initDbAsync(config.DATABASE_PATH)` 只傳 path，從未傳 databaseUrl
+  - 全專案 `src/` 中 `DATABASE_URL` 字串只出現在 factory.ts 的錯誤訊息
+- **修復**：
+  1. `config.ts` Config interface 加 `DATABASE_URL: string`（含 JSDoc）；config object 加 `DATABASE_URL: process.env.DATABASE_URL?.trim() ?? ""`
+  2. `index.ts` L120 改 `initDbAsync(config.DATABASE_PATH, config.DATABASE_URL || undefined)`（空 string falsy → undefined 走 SQLite）
+  3. `index.ts` 啟動 log 加密碼 redact：`config.DATABASE_URL.replace(/\/\/([^:]+):([^@]+)@/, "//$1:***@")` 把 `postgres://user:pass@host` 變 `postgres://user:***@host`
+
+### Tunnel URL 5 衝突修復
+1. **衝突 3（`??` 空字串陷阱）**：`apiUrl.ts` 新增 `getRawConfiguredApiUrl(): Promise<string | null>` — 讀 settings.api_url，trim 後空字串/null 視為「未設定」回 null。`getEffectiveApiUrl()` 保持向後相容，內部改用 `getRawConfiguredApiUrl()`。
+2. **衝突 1（`/sub_url` 無清除路徑）**：`adminHandlers.ts` subUrlConversation 改 3 步驟選單（1=設新值 / 2=清除回復自動 / 其他=取消）。新增 `database.ts` `deleteSetting(key)` 函式（因 setSetting 只接 string，無法寫 null）。
+3. **衝突 2（Settings GET/PUT 契約不對稱）**：`routes.ts` settings GET 改回傳 `{ api_url: rawConfigured (string|null，前端表單用), effective_api_url: info.url, api_url_source: info.source, tunnel_url: getTunnelUrl() }`；PUT `api_url` 空字串/whitespace → `deleteSetting("api_url")`，非空 → trim + 去尾部 `/` 後 setSetting。
+4. **衝突 4（Tunnel URL 固化風險）+ 衝突 5（Race window）**：`apiUrl.ts` 新增 `EffectiveApiUrlInfo` interface（`{ url, source, isTunnel }`）+ `ApiUrlSource` type（`"configured" | "tunnel" | "tunnel-pending" | "default"`）+ `getEffectiveApiUrlWithSource()`。`userHandlers.ts` handleUrl 依 source 加 context warning（tunnel=⚠️臨時URL / tunnel-pending=⏳連線中）。`adminHandlers.ts` subUrlConversation 顯示也依 source 加 warning。
+
+### 測試修復
+- **最初 2 個測試失敗**（`expected 404 to be 200/400`）：根本原因是 `routes.ts` PUT settings 路徑被誤加 `/web` 前綴（`router.put("/web/api/admin/settings"` → 實際變 `/web/web/api/admin/settings`），**不是** test mock 缺 deleteSetting（最初推測錯誤，教訓：先看 diff 再猜測）。
+- 修復：routes.ts L1483 改回 `router.put("/api/admin/settings"`。
+- 防禦性：`web_routes.test.ts` db mock 補 `deleteSetting: vi.fn()`（雖然當前測試不走此路徑，但補上避免未來 settings 清除測試 throw）。
+
+### 關鍵設計決策
+- **優先級鏈**：configured（管理員 `/sub_url` 明確設定）> tunnel（quick tunnel 自動取得）> tunnel-pending（quick tunnel 啟動中但 URL 尚未到位）> default（env DEFAULT_API_URL）。configured 明確設定優先於自動 tunnel URL，避免啟停 tunnel 覆蓋明確設定。
+- **tunnel-pending 偵測**：`config.CLOUDFLARE_TUNNEL === "quick"` 且 `getTunnelUrl()` 為 null 時標 source 為 tunnel-pending（而非 default），讓 race window 期間的 `/url` 命令能顯示「⏳ 隧道連線中」而非誤導性的 localhost URL。
+- **deleteSetting 獨立函式**：因 setSetting 只接 string value，無法寫 null/undefined 代表「刪除」。用 `DELETE FROM settings WHERE quoteIdent("key", drv().dialect) = ?` 跨方言安全刪除。
+- **settings PUT trim + 去尾部 `/`**：避免 `https://api.example.com/` 與 `https://api.example.com` 在不同呼叫點被當不同值。
+
+### 改動清單（8 檔，working copy 未 commit）
+1. `nodejs/src/config.ts` — Config interface + config object 加 DATABASE_URL
+2. `nodejs/src/index.ts` — initDbAsync 傳 DATABASE_URL + log redact
+3. `nodejs/src/apiUrl.ts` — 完整重寫（v2）：getRawConfiguredApiUrl + getEffectiveApiUrlWithSource + EffectiveApiUrlInfo/ApiUrlSource types
+4. `nodejs/src/db/database.ts` — 新增 deleteSetting(key)
+5. `nodejs/src/web/routes.ts` — import 改 + settings GET/PUT 重寫 + PUT 路徑 typo 修復
+6. `nodejs/src/bot/handlers/adminHandlers.ts` — subUrlConversation 3 步驟選單重寫 + source warning
+7. `nodejs/src/bot/handlers/userHandlers.ts` — handleUrl 加 source warning
+8. `nodejs/tests/web_routes.test.ts` — db mock 補 deleteSetting
+
+### 驗證
+- `npx tsc --noEmit`：**EXIT=0** 零錯。
+- `npx vitest run`：**444 passed | 38 skipped | 0 failed**（38 skipped 為 PG/MySQL CI only driver 測試）。
+
+### 待完成（本次 session 未做）
+- commit + push（等用戶確認）
+- 更新 deep_todos.md
+- 可選：為新行為加測試（settings 清除、source metadata、tunnel-pending 偵測）
+- 前端 Web Console 目前沒有讀寫 api_url 的 UI（grep 整個 web/ 目錄零匹配），所以 settings PUT 的 api_url 清除邏輯目前只透過 `/sub_url` bot 命令觸發

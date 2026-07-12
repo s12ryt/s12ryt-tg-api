@@ -167,3 +167,17 @@
 - [x] **import 清理**：`userHandlers.ts` 移除 `getSetting`+`config`（全檔僅此處）；`adminHandlers.ts` 移除 `getSetting`（保留 `setSetting`+`config`）；`webHandlers.ts` 移除 `getSetting`（保留 `config`）；`routes.ts` 保留 `config`+`getSetting`（各有其他用途）。
 - [x] **設計決策**：優先級 `api_url` > `tunnel_url` > `DEFAULT_API_URL` — 管理員 `/sub_url` 手動設定優先於自動 tunnel，避免啟停 tunnel 覆蓋明確設定。
 - [x] 驗證：`tsc --noEmit` 零錯；`vitest run` **444 passed, 38 skipped**（PG/MySQL CI only），0 failed。
+
+## 2026-07-12 - v1.10.2 修復：Tunnel URL 5 衝突 + P0 DATABASE_URL 根本 bug
+
+- [x] **P0：DATABASE_URL 根本 bug**：整個雲端 DB 遷移工程（階段 0-5）driver 實作完整，但主入口 `index.ts` 從未實際讀取 `DATABASE_URL` 環境變數（config.ts Config interface 沒有該屬性，initDbAsync 只傳 path）。**修復**：config.ts 加 `DATABASE_URL` 屬性（`process.env.DATABASE_URL?.trim() ?? ""`）；index.ts L120 改 `initDbAsync(config.DATABASE_PATH, config.DATABASE_URL || undefined)` + log 密碼 redact（`/\/\/([^:]+):([^@]+)@/` → `//$1:***@`）。
+- [x] **衝突 3（`??` 空字串陷阱）**：apiUrl.ts 新增 `getRawConfiguredApiUrl(): Promise<string|null>` — 讀 settings.api_url，trim 後空字串/null 視為「未設定」回 null。`getEffectiveApiUrl()` 保持向後相容，內部改用 getRawConfiguredApiUrl。
+- [x] **衝突 1（`/sub_url` 無清除路徑）**：adminHandlers.ts subUrlConversation 改 3 步驟選單（1=設新值 / 2=清除回自動 / 其他=取消）。新增 database.ts `deleteSetting(key)` 函式（因 setSetting 只接 string，無法寫 null）。
+- [x] **衝突 2（Settings GET/PUT 契約不對稱）**：routes.ts settings GET 改回傳 `{ api_url: rawConfigured (string|null), effective_api_url: info.url, api_url_source: info.source, tunnel_url: getTunnelUrl() }`；PUT `api_url` 空字串/whitespace → `deleteSetting("api_url")`，非空 → trim + 去尾部 `/` 後 setSetting。
+- [x] **衝突 4（Tunnel URL 固化風險）+ 衝突 5（Race window）**：apiUrl.ts 新增 `EffectiveApiUrlInfo` interface + `ApiUrlSource` type + `getEffectiveApiUrlWithSource()`。userHandlers.ts handleUrl + adminHandlers.ts subUrlConversation 依 source（configured/tunnel/tunnel-pending/default）加 context warning。
+- [x] **tunnel-pending 偵測**：`config.CLOUDFLARE_TUNNEL === "quick"` 且 `getTunnelUrl()` 為 null 時標 source 為 tunnel-pending，讓 race window 期間的 `/url` 命令顯示「⏳ 隧道連線中」而非誤導性的 localhost。
+- [x] **測試修復**：2 個測試失敗（`expected 404`）根本原因是 routes.ts PUT settings 路徑被誤加 `/web` 前綴（`router.put("/web/api/admin/settings"` → 實際變 `/web/web/api/admin/settings`），**不是** test mock 缺 deleteSetting（最初推測錯誤，教訓：先看 diff 再推測）。修復：routes.ts L1483 改回 `/api/admin/settings`。防禦性：web_routes.test.ts db mock 補 `deleteSetting: vi.fn()`。
+- [x] 驗證：`tsc --noEmit` 零錯；`vitest run` **444 passed | 38 skipped | 0 failed**。
+- [ ] commit + push（等使用者確認）。
+- [ ] 可選：為新行為加測試（settings 清除、source metadata、tunnel-pending 偵測）。
+- [ ] 前端 Web Console 目前沒有讀寫 api_url 的 UI，settings PUT 的 api_url 清除邏輯目前只透過 `/sub_url` bot 命令觸發。
