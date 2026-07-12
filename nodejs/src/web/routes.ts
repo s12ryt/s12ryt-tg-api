@@ -567,6 +567,7 @@ router.post("/api/auth/logout", async (req: Request, res: Response) => {
   if (auth?.startsWith("Bearer ")) {
     destroySession(auth.slice(7));
   }
+  clearSessionCookie(res);
   res.json({ ok: true });
 });
 

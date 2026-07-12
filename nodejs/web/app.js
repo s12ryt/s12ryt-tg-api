@@ -388,6 +388,11 @@
     state.sessionToken = null;
     state.user = null;
     localStorage.removeItem("web_session");
+    // 有自定義登入路徑時，跳轉過去（確保 URL 正確 + cookie 已被後端清除）
+    if (state.authConfig && state.authConfig.loginPath) {
+      window.location.href = state.authConfig.loginPath;
+      return;
+    }
     if (state.authConfig && state.authConfig.authMode === "password") {
       if (state.authConfig.needsSetup) {
         showLoginSetup(msg);
