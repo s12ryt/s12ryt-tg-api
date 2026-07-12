@@ -31,6 +31,11 @@ function printUsage(): void {
   console.error("  migrate-db --from ./data/bot.db --to mysql://user:pass@host:3306/db");
 }
 
+/** Mask the password in a connection URL for safe logging. */
+function redactUrl(url: string): string {
+  return url.replace(/\/\/([^:]+):([^@]+)@/, "//$1:***@");
+}
+
 function parseArgs(argv: string[]): CliArgs {
   const args = argv.slice(2);
   let from = "";
@@ -69,7 +74,7 @@ function summarize(data: { tables: Record<string, Record<string, unknown>[]> }):
 async function main(): Promise<void> {
   const { from, to } = parseArgs(process.argv);
   console.log(`[migrate-db] Source:      ${from}`);
-  console.log(`[migrate-db] Destination: ${to}`);
+  console.log(`[migrate-db] Destination: ${redactUrl(to)}`);
 
   // Phase 1: open SQLite source and export.
   console.log("[migrate-db] Opening SQLite source ...");
