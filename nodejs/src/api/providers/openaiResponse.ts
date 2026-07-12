@@ -17,6 +17,7 @@ import {
 } from "../responses.js";
 import { injectForOpenAIResponse, type ThinkingLevel } from "../thinkingParser.js";
 import { createRequestTimeout, isAbortError, withRequestTimeout } from "./requestTimeout.js";
+import { ProviderHttpError } from "./errors.js";
 
 const DEFAULT_TIMEOUT = 120_000;
 const MAX_RETRIES = 2;
@@ -177,9 +178,7 @@ async function doRequest(
 
         if (!resp.ok) {
           const errorBody = await resp.text();
-          const error = new Error(`OpenAI Responses API error ${resp.status}: ${errorBody}`);
-          (error as any).status = resp.status;
-          throw error;
+          throw new ProviderHttpError(`OpenAI Responses API error ${resp.status}: ${errorBody}`, resp.status);
         }
 
         return (await resp.json()) as Record<string, any>;

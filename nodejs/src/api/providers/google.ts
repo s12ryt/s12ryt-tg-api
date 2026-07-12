@@ -7,6 +7,7 @@
 import { v4 as uuidv4 } from "uuid";
 import { injectForGoogle, type ThinkingLevel } from "../thinkingParser.js";
 import { createRequestTimeout, isAbortError, withRequestTimeout } from "./requestTimeout.js";
+import { ProviderHttpError } from "./errors.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -275,9 +276,7 @@ async function doRequest(
 
         if (!resp.ok) {
           const errorBody = await resp.text();
-          const error = new Error(`Gemini API error ${resp.status}: ${errorBody}`);
-          (error as any).status = resp.status;
-          throw error;
+          throw new ProviderHttpError(`Gemini API error ${resp.status}: ${errorBody}`, resp.status);
         }
 
         const data = await resp.json();
