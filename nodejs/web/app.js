@@ -501,6 +501,16 @@
       roleEl.classList.remove("admin");
     }
 
+    // password 模式才顯示帳號設定相關導航
+    if (state.authConfig && state.authConfig.authMode === "password") {
+      const navAccount = $("#nav-account");
+      if (navAccount) navAccount.classList.remove("hidden");
+      if (me.isAdmin) {
+        const navWebUsers = $("#nav-web-users");
+        if (navWebUsers) navWebUsers.classList.remove("hidden");
+      }
+    }
+
     showApp();
 
     // 初始化路由
@@ -519,8 +529,10 @@
     "/coding": pageCoding,
     "/limits": pageLimits,
     "/restrictions": pageRestrictions,
+    "/account": pageAccount,
     "/providers": pageProviders,
     "/users": pageUsers,
+    "/web-users": pageWebUsers,
     "/groups": pageGroups,
     "/all-usage": pageAllUsage,
     "/api-test": pageApiTest,
@@ -3197,6 +3209,245 @@
           btn.disabled = false;
           btn.textContent = "載入備份列表";
         }
+      };
+    } catch (err) {
+      body.innerHTML = errorState(err.message);
+    }
+  }
+
+  // =========================================================================
+  // Pages — Account (password mode: change password)
+  // =========================================================================
+
+  async function pageAccount() {
+    const body = setPage("個人設定", "管理您的帳號");
+    body.innerHTML = `
+      <div class="card" style="max-width:480px;">
+        <h3 style="margin-bottom:16px;">修改密碼</h3>
+        <div style="position:relative;margin-bottom:12px;">
+          <input type="password" id="acc-current-pwd" placeholder="目前密碼" style="width:100%;padding:12px 44px 12px 12px;box-sizing:border-box;" autocomplete="current-password">
+          <button type="button" class="pwd-toggle" data-target="acc-current-pwd" aria-label="顯示密碼" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text-secondary);padding:4px;display:flex;align-items:center;">${ic.eye}</button>
+        </div>
+        <div style="position:relative;margin-bottom:12px;">
+          <input type="password" id="acc-new-pwd" placeholder="新密碼（至少 8 字元）" style="width:100%;padding:12px 44px 12px 12px;box-sizing:border-box;" autocomplete="new-password">
+          <button type="button" class="pwd-toggle" data-target="acc-new-pwd" aria-label="顯示密碼" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text-secondary);padding:4px;display:flex;align-items:center;">${ic.eye}</button>
+        </div>
+        <div style="position:relative;margin-bottom:16px;">
+          <input type="password" id="acc-confirm-pwd" placeholder="確認新密碼" style="width:100%;padding:12px 44px 12px 12px;box-sizing:border-box;" autocomplete="new-password">
+          <button type="button" class="pwd-toggle" data-target="acc-confirm-pwd" aria-label="顯示密碼" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text-secondary);padding:4px;display:flex;align-items:center;">${ic.eye}</button>
+        </div>
+        <button class="btn btn-primary" id="btn-save-password" style="width:100%;">更新密碼</button>
+        <p id="acc-msg" style="margin-top:8px;font-size:13px;min-height:18px;"></p>
+      </div>
+    `;
+
+    const btn = $("#btn-save-password");
+    const msgEl = $("#acc-msg");
+    btn.onclick = async () => {
+      const current = $("#acc-current-pwd").value;
+      const newPwd = $("#acc-new-pwd").value;
+      const confirmPwd = $("#acc-confirm-pwd").value;
+      msgEl.textContent = "";
+
+      if (!current || !newPwd || !confirmPwd) {
+        msgEl.textContent = "請填寫所有欄位";
+        msgEl.style.color = "var(--accent-red)";
+        return;
+      }
+      if (newPwd !== confirmPwd) {
+        msgEl.textContent = "兩次輸入的新密碼不一致";
+        msgEl.style.color = "var(--accent-red)";
+        return;
+      }
+      if (newPwd.length < 8) {
+        msgEl.textContent = "新密碼至少需要 8 字元";
+        msgEl.style.color = "var(--accent-red)";
+        return;
+      }
+
+      btn.disabled = true;
+      btn.textContent = "更新中...";
+      try {
+        await API.put("/web/api/auth/password", { currentPassword: current, newPassword: newPwd });
+        toast("密碼已更新", "success");
+        $("#acc-current-pwd").value = "";
+        $("#acc-new-pwd").value = "";
+        $("#acc-confirm-pwd").value = "";
+        msgEl.textContent = "密碼已更新，其他設備的登入狀態已失效";
+        msgEl.style.color = "#22C55E";
+      } catch (err) {
+        msgEl.textContent = err.message || "更新失敗";
+        msgEl.style.color = "var(--accent-red)";
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "更新密碼";
+      }
+    };
+  }
+
+  // =========================================================================
+  // Pages — Web Users (admin, password mode)
+  // =========================================================================
+
+  async function pageWebUsers() {
+    const body = setPage("Web 帳號", "管理帳密模式的用戶");
+    body.innerHTML = loading();
+
+    try {
+      const data = await API.get("/web/api/admin/web-users");
+      const users = data.users || [];
+      body.innerHTML = `
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px;">
+            <h3>Web 用戶列表（${users.length}）</h3>
+            <button class="btn btn-primary" id="btn-add-web-user">新增用戶</button>
+          </div>
+          <div style="overflow-x:auto;">
+            <table style="width:100%;border-collapse:collapse;font-size:14px;">
+              <thead>
+                <tr style="border-bottom:2px solid var(--border);">
+                  <th style="text-align:left;padding:8px 12px;">ID</th>
+                  <th style="text-align:left;padding:8px 12px;">使用者名稱</th>
+                  <th style="text-align:left;padding:8px 12px;">角色</th>
+                  <th style="text-align:left;padding:8px 12px;">狀態</th>
+                  <th style="text-align:left;padding:8px 12px;">建立時間</th>
+                  <th style="text-align:left;padding:8px 12px;">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${users.length === 0 ? `<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--text-secondary);">無用戶</td></tr>` : users.map(function (u) {
+                  var uid = Number(u.id);
+                  var isAdmin = Number(u.is_admin) === 1;
+                  var isActive = Number(u.is_active) === 1;
+                  return '<tr style="border-bottom:1px solid var(--border);">' +
+                    '<td style="padding:8px 12px;">' + esc(u.id) + '</td>' +
+                    '<td style="padding:8px 12px;font-family:var(--mono);">' + esc(u.username) + '</td>' +
+                    '<td style="padding:8px 12px;">' + (isAdmin ? '<span style="color:var(--accent);">管理員</span>' : '一般') + '</td>' +
+                    '<td style="padding:8px 12px;">' + (isActive ? '<span style="color:#22C55E;">啟用</span>' : '<span style="color:var(--accent-red);">停用</span>') + '</td>' +
+                    '<td style="padding:8px 12px;">' + fmtDate(u.created_at) + '</td>' +
+                    '<td style="padding:8px 12px;white-space:nowrap;">' +
+                      '<button class="btn btn-ghost btn-sm" data-action="toggle" data-uid="' + uid + '" data-active="' + (isActive ? "1" : "0") + '">' + (isActive ? "停用" : "啟用") + '</button> ' +
+                      '<button class="btn btn-ghost btn-sm" data-action="reset" data-uid="' + uid + '" data-username="' + esc(u.username) + '">重設密碼</button> ' +
+                      '<button class="btn btn-danger btn-sm" data-action="delete" data-uid="' + uid + '" data-username="' + esc(u.username) + '">刪除</button>' +
+                    '</td>' +
+                  '</tr>';
+                }).join("")}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      `;
+
+      // 事件委託：data-action 按鈕
+      body.querySelectorAll("[data-action]").forEach(function (btn) {
+        btn.onclick = function () {
+          var action = btn.dataset.action;
+          var uid = parseInt(btn.dataset.uid, 10);
+          if (isNaN(uid)) return;
+          if (action === "toggle") {
+            window._toggleWebUser(uid, btn.dataset.active === "1");
+          } else if (action === "reset") {
+            window._resetWebUserPwd(uid, btn.dataset.username || "");
+          } else if (action === "delete") {
+            window._deleteWebUser(uid, btn.dataset.username || "");
+          }
+        };
+      });
+
+      $("#btn-add-web-user").onclick = function () {
+        showModal("新增 Web 用戶", `
+          <div style="margin-bottom:12px;">
+            <label style="display:block;margin-bottom:4px;font-size:13px;">使用者名稱（3-64 字元，英數字、底線、連字號）</label>
+            <input type="text" id="wu-username" style="width:100%;padding:8px 12px;box-sizing:border-box;" autocomplete="off">
+          </div>
+          <div style="margin-bottom:12px;">
+            <label style="display:block;margin-bottom:4px;font-size:13px;">密碼（至少 8 字元）</label>
+            <input type="password" id="wu-password" style="width:100%;padding:8px 12px;box-sizing:border-box;" autocomplete="new-password">
+          </div>
+          <div style="margin-bottom:12px;">
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;">
+              <input type="checkbox" id="wu-is-admin"> 設為管理員
+            </label>
+          </div>
+          <p id="wu-msg" style="font-size:13px;min-height:18px;color:var(--accent-red);"></p>
+        `, [
+          { label: "取消", class: "btn-ghost" },
+          {
+            label: "建立", class: "btn-primary", close: false, onClick: async function (modalBody) {
+              var username = modalBody.querySelector("#wu-username").value.trim();
+              var password = modalBody.querySelector("#wu-password").value;
+              var isAdmin = modalBody.querySelector("#wu-is-admin").checked;
+              var msgEl = modalBody.querySelector("#wu-msg");
+              msgEl.textContent = "";
+
+              if (!username || !password) { msgEl.textContent = "請填寫所有欄位"; return; }
+              if (password.length < 8) { msgEl.textContent = "密碼至少需要 8 字元"; return; }
+
+              try {
+                await API.post("/web/api/admin/web-users", { username: username, password: password, isAdmin: isAdmin });
+                toast("用戶已建立", "success");
+                closeModal();
+                pageWebUsers();
+              } catch (err) {
+                msgEl.textContent = err.message || "建立失敗";
+              }
+            }
+          }
+        ]);
+      };
+
+      window._toggleWebUser = function (id, currentlyActive) {
+        var action = currentlyActive ? "停用" : "啟用";
+        confirm("確定要" + action + "此用戶嗎？" + (currentlyActive ? "停用後該用戶將立即被登出。" : ""), async function () {
+          try {
+            await API.put("/web/api/admin/web-users/" + id + "/status", { isActive: !currentlyActive });
+            toast("已" + action, "success");
+            pageWebUsers();
+          } catch (err) {
+            toast(err.message, "error");
+          }
+        });
+      };
+
+      window._resetWebUserPwd = function (id, username) {
+        showModal("重設 " + esc(username) + " 的密碼", `
+          <div style="margin-bottom:12px;">
+            <label style="display:block;margin-bottom:4px;font-size:13px;">新密碼（至少 8 字元）</label>
+            <input type="password" id="rp-new-pwd" style="width:100%;padding:8px 12px;box-sizing:border-box;" autocomplete="new-password">
+          </div>
+          <p style="font-size:13px;color:var(--text-secondary);">重設後該用戶的所有登入狀態將失效。</p>
+          <p id="rp-msg" style="font-size:13px;min-height:18px;color:var(--accent-red);"></p>
+        `, [
+          { label: "取消", class: "btn-ghost" },
+          {
+            label: "重設", class: "btn-primary", close: false, onClick: async function (modalBody) {
+              var newPwd = modalBody.querySelector("#rp-new-pwd").value;
+              var msgEl = modalBody.querySelector("#rp-msg");
+              msgEl.textContent = "";
+              if (!newPwd) { msgEl.textContent = "請輸入新密碼"; return; }
+              if (newPwd.length < 8) { msgEl.textContent = "密碼至少需要 8 字元"; return; }
+              try {
+                await API.put("/web/api/admin/web-users/" + id + "/password", { newPassword: newPwd });
+                toast("密碼已重設", "success");
+                closeModal();
+              } catch (err) {
+                msgEl.textContent = err.message || "重設失敗";
+              }
+            }
+          }
+        ]);
+      };
+
+      window._deleteWebUser = function (id, username) {
+        confirm("確定要刪除用戶「" + username + "」嗎？此操作不可復原。", async function () {
+          try {
+            await API.del("/web/api/admin/web-users/" + id);
+            toast("用戶已刪除", "success");
+            pageWebUsers();
+          } catch (err) {
+            toast(err.message, "error");
+          }
+        });
       };
     } catch (err) {
       body.innerHTML = errorState(err.message);

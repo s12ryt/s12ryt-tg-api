@@ -648,6 +648,171 @@ router.post("/api/admin/regenerate-panel-path", requireAdmin, async (req: Reques
 });
 
 // ---------------------------------------------------------------------------
+// Web 用戶管理路由（僅 password 模式 + 管理員）
+// ---------------------------------------------------------------------------
+
+/** GET /web/api/admin/web-users — 列出所有 Web 用戶（password 模式） */
+router.get("/api/admin/web-users", requireAdmin, async (_req: Request, res: Response) => {
+  if (config.WEB_AUTH_MODE !== "password") {
+    res.status(400).json({ error: "此功能僅在 WEB_AUTH_MODE=password 時可用" });
+    return;
+  }
+  const users = await getWebUsers();
+  res.json({ users });
+});
+
+/** POST /web/api/admin/web-users — 新增 Web 用戶（password 模式） */
+router.post("/api/admin/web-users", requireAdmin, async (req: Request, res: Response) => {
+  if (config.WEB_AUTH_MODE !== "password") {
+    res.status(400).json({ error: "此功能僅在 WEB_AUTH_MODE=password 時可用" });
+    return;
+  }
+  const { username, password, isAdmin } = req.body;
+  if (typeof username !== "string" || typeof password !== "string") {
+    res.status(400).json({ error: "請提供 username 和 password" });
+    return;
+  }
+  const usernameError = validateUsername(username);
+  if (usernameError) {
+    res.status(400).json({ error: usernameError });
+    return;
+  }
+  const passwordError = validatePasswordStrength(password);
+  if (passwordError) {
+    res.status(400).json({ error: passwordError });
+    return;
+  }
+
+  try {
+    const passwordHash = await hashPassword(password);
+    await addWebUser(username, passwordHash, isAdmin ? 1 : 0);
+    res.json({ ok: true });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/unique|duplicate/i.test(msg)) {
+      res.status(409).json({ error: "使用者名稱已存在" });
+      return;
+    }
+    console.error("[web] addWebUser error:", err);
+    res.status(500).json({ error: "新增用戶失敗" });
+  }
+});
+
+/** PUT /web/api/admin/web-users/:id/status — 停用/啟用 Web 用戶（password 模式） */
+router.put("/api/admin/web-users/:id/status", requireAdmin, async (req: Request, res: Response) => {
+  if (config.WEB_AUTH_MODE !== "password") {
+    res.status(400).json({ error: "此功能僅在 WEB_AUTH_MODE=password 時可用" });
+    return;
+  }
+  const id = parseInt(req.params.id, 10);
+  if (isNaN(id)) {
+    res.status(400).json({ error: "無效的用戶 ID" });
+    return;
+  }
+  const { isActive } = req.body;
+  if (typeof isActive !== "boolean") {
+    res.status(400).json({ error: "請提供 isActive 布林值" });
+    return;
+  }
+
+  const webUser = await getWebUserById(id);
+  if (!webUser) {
+    res.status(404).json({ error: "用戶不存在" });
+    return;
+  }
+
+  // 安全：停用自己時拒絕
+  const webAuth = req.webAuth!;
+  if (webAuth.webUserId === id && !isActive) {
+    res.status(400).json({ error: "無法停用自己的帳號" });
+    return;
+  }
+
+  await updateWebUserStatus(id, isActive ? 1 : 0);
+  // 停用時銷毀該用戶所有 session
+  if (!isActive) {
+    destroySessionsByWebUserId(id);
+  }
+  res.json({ ok: true });
+});
+
+/** PUT /web/api/admin/web-users/:id/password — 管理員重設密碼（password 模式） */
+router.put("/api/admin/web-users/:id/password", requireAdmin, async (req: Request, res: Response) => {
+  if (config.WEB_AUTH_MODE !== "password") {
+    res.status(400).json({ error: "此功能僅在 WEB_AUTH_MODE=password 時可用" });
+    return;
+  }
+  const id = parseInt(req.params.id, 10);
+  if (isNaN(id)) {
+    res.status(400).json({ error: "無效的用戶 ID" });
+    return;
+  }
+  const { newPassword } = req.body;
+  if (typeof newPassword !== "string") {
+    res.status(400).json({ error: "請提供 newPassword" });
+    return;
+  }
+  const passwordError = validatePasswordStrength(newPassword);
+  if (passwordError) {
+    res.status(400).json({ error: passwordError });
+    return;
+  }
+
+  const webUser = await getWebUserById(id);
+  if (!webUser) {
+    res.status(404).json({ error: "用戶不存在" });
+    return;
+  }
+
+  try {
+    const newHash = await hashPassword(newPassword);
+    await updateWebUserPassword(id, newHash);
+    // 銷毀該用戶所有 session（強制重新登入）
+    destroySessionsByWebUserId(id);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("[web] adminResetPassword error:", err);
+    res.status(500).json({ error: "重設密碼失敗" });
+  }
+});
+
+/** DELETE /web/api/admin/web-users/:id — 刪除 Web 用戶（password 模式） */
+router.delete("/api/admin/web-users/:id", requireAdmin, async (req: Request, res: Response) => {
+  if (config.WEB_AUTH_MODE !== "password") {
+    res.status(400).json({ error: "此功能僅在 WEB_AUTH_MODE=password 時可用" });
+    return;
+  }
+  const id = parseInt(req.params.id, 10);
+  if (isNaN(id)) {
+    res.status(400).json({ error: "無效的用戶 ID" });
+    return;
+  }
+
+  // 安全：不能刪除自己
+  const webAuth = req.webAuth!;
+  if (webAuth.webUserId === id) {
+    res.status(400).json({ error: "無法刪除自己的帳號" });
+    return;
+  }
+
+  const webUser = await getWebUserById(id);
+  if (!webUser) {
+    res.status(404).json({ error: "用戶不存在" });
+    return;
+  }
+
+  try {
+    // 先銷毀該用戶所有 session
+    destroySessionsByWebUserId(id);
+    await deleteWebUser(id);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("[web] deleteWebUser error:", err);
+    res.status(500).json({ error: "刪除用戶失敗" });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // 用戶功能路由（普通用戶可存取自己的資料）
 // ---------------------------------------------------------------------------
 
