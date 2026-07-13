@@ -986,12 +986,28 @@ export async function getProviderById(id: number): Promise<Provider | undefined>
 
 export async function updateProvider(
   id: number,
-  data: Partial<Omit<Provider, "id" | "created_at">>
+  data: Partial<Omit<Provider, "id" | "created_at" | "updated_at">>
 ): Promise<void> {
+  type UpdatableProviderField = keyof Omit<Provider, "id" | "created_at" | "updated_at">;
+  const allowedFields = new Set<UpdatableProviderField>([
+    "name",
+    "api_type",
+    "base_url",
+    "api_key",
+    "user_agent",
+    "key_strategy",
+    "models",
+    "enabled",
+    "input_price",
+    "output_price",
+  ]);
   const fields: string[] = [];
   const values: SqlValue[] = [];
 
   for (const [key, value] of Object.entries(data)) {
+    if (!allowedFields.has(key as UpdatableProviderField)) {
+      throw new Error(`Invalid provider field: ${key}`);
+    }
     fields.push(`${key} = ?`);
     values.push(value as SqlValue);
   }

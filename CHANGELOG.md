@@ -2,6 +2,18 @@
 
 所有版本變更記錄。本檔案由 `npm run release` 自動維護。
 
+## [1.10.3] - 2026-07-14
+
+### ✨ Features
+- add account settings and web user management pages (1e66d32)
+- redesign login screen with brand logo, input icons, password toggle (a5a3138)
+
+### 🐛 Bug Fixes
+- add missing parseInt radix and use CSS variable for success color (b6f6f14)
+- enforce requireAdmin on all admin API routes and remove dead endpoints (d9e0918)
+- redirect to login path on logout and clear session cookie (85c26c6)
+- set session cookie on login so /{uuid}/web gate accepts it (70885a8)
+
 ## [1.10.2] - 2026-07-12
 
 ### ✨ Features

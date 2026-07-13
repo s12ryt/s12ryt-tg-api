@@ -236,6 +236,12 @@ describe("Provider CRUD", async () => {
     await expect(updateProvider(1, {})).rejects.toThrow("No fields to update");
   });
 
+  it("should reject unknown provider fields before building SQL", async () => {
+    await expect(
+      updateProvider(1, { "name = NULL WHERE 1=1 --": "injected" } as never)
+    ).rejects.toThrow("Invalid provider field");
+  });
+
   it("should delete a provider by id", async () => {
     await addProvider({
       name: "OpenAI",

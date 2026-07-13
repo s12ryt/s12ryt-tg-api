@@ -1113,10 +1113,10 @@
                   </div>
                 </div>
                 <div style="display:flex;gap:6px;flex-wrap:wrap;">
-                  <button class="btn-icon" onclick="window._editProvider(${p.id})">編輯</button>
-                  <button class="btn-icon" onclick="window._providerPrices(${p.id},'${esc(p.name)}')">定價</button>
-                  <button class="btn-icon" onclick="window._testModel(${p.id})">${ic.flask} 測試</button>
-                  <button class="btn-icon danger" onclick="window._delProvider(${p.id},'${esc(p.name)}')">刪除</button>
+                  <button class="btn-icon" data-action="edit-provider" data-uid="${p.id}">編輯</button>
+                  <button class="btn-icon" data-action="provider-prices" data-uid="${p.id}" data-name="${esc(p.name)}">定價</button>
+                  <button class="btn-icon" data-action="test-model" data-uid="${p.id}">${ic.flask} 測試</button>
+                  <button class="btn-icon danger" data-action="del-provider" data-uid="${p.id}" data-name="${esc(p.name)}">刪除</button>
                 </div>
               </div>
               <div style="font-size:13px;">
@@ -1129,6 +1129,24 @@
           `).join("")
         }
       `;
+
+      // Bind actions after rendering so names never enter executable JavaScript.
+      body.querySelectorAll("[data-action]").forEach(function (btn) {
+        btn.onclick = function () {
+          var action = btn.dataset.action;
+          var uid = parseInt(btn.dataset.uid, 10);
+          if (isNaN(uid)) return;
+          if (action === "edit-provider") {
+            window._editProvider(uid);
+          } else if (action === "provider-prices") {
+            window._providerPrices(uid, btn.dataset.name || "");
+          } else if (action === "test-model") {
+            window._testModel(uid);
+          } else if (action === "del-provider") {
+            window._delProvider(uid, btn.dataset.name || "");
+          }
+        };
+      });
 
       $("#btn-add-provider").onclick = () => showProviderForm();
       window._editProvider = (id) => {
@@ -1522,7 +1540,7 @@
       const prices = data.prices || [];
 
       showModal(
-        `${name} — 模型定價`,
+        `${esc(name)} — 模型定價`,
         `
           <p style="margin-bottom:12px;color:var(--text-secondary);font-size:13px;">
             價格單位：USD / 1M tokens。修改後點擊「儲存」批量更新。
@@ -1733,7 +1751,7 @@
             </div>
             <div class="form-group">
               <label>期限（YYYY-MM-DD 或留空=永久）</label>
-              <input type="text" id="ud-expires" value="${user.expires_at ? user.expires_at.split(" ")[0] : ""}">
+              <input type="text" id="ud-expires" value="${esc(user.expires_at ? String(user.expires_at).split(" ")[0] : "")}">
             </div>
           `}
         `,
@@ -1946,7 +1964,7 @@
         </div>
         <div class="form-group">
           <label>期限（YYYY-MM-DD 或留空=繼承）</label>
-          <input type="text" id="kl-expires" value="${keyData.expires_at ? String(keyData.expires_at).split(" ")[0] : ""}" placeholder="繼承">
+          <input type="text" id="kl-expires" value="${esc(keyData.expires_at ? String(keyData.expires_at).split(" ")[0] : "")}" placeholder="繼承">
         </div>
       `,
       [
@@ -2074,7 +2092,7 @@
       fields.map(([key, label]) => `
         <div class="form-group">
           <label>${label}</label>
-          <input type="${key === "name" || key === "display_name" ? "text" : "number"}" id="gf-${key}" value="${g ? (g[key] ?? "") : ""}" ${key === "name" && isEdit ? "readonly" : ""}>
+          <input type="${key === "name" || key === "display_name" ? "text" : "number"}" id="gf-${key}" value="${esc(g ? String(g[key] ?? "") : "")}" ${key === "name" && isEdit ? "readonly" : ""}>
         </div>
       `).join("") + `
         <div class="form-group">
