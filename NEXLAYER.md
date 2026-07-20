@@ -101,7 +101,7 @@ application:
   name: s12ryt-tg-api
   pods:
     - name: app
-      image: "registry.nexlayer.io/user_01ky00q4y1ar9h96b4vqxnbjet/s12ryt-tg-api:19f801397df"
+      image: "registry.nexlayer.io/user_01ky00q4y1ar9h96b4vqxnbjet/s12ryt-tg-api:latest"
       path: /
       servicePorts:
         - 8000
