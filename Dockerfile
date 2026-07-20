@@ -1,4 +1,4 @@
-FROM node:24-bookworm-slim AS build
+FROM mirror.gcr.io/library/node:24-bookworm-slim AS build
 
 WORKDIR /app/nodejs
 
@@ -10,7 +10,7 @@ RUN npm ci --engine-strict
 COPY nodejs/ ./
 RUN npm run build
 
-FROM node:24-bookworm-slim AS runtime
+FROM mirror.gcr.io/library/node:24-bookworm-slim AS runtime
 
 WORKDIR /app/nodejs
 

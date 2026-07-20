@@ -1,0 +1,33 @@
+application:
+  name: s12ryt-tg-api
+  pods:
+    - name: app
+      image: "registry.nexlayer.io/user_01ky00q4y1ar9h96b4vqxnbjet/s12ryt-tg-api:19f801397df"
+      path: /
+      servicePorts:
+        - 8000
+      vars:
+        NODE_ENV: production
+        API_PORT: "8000"
+        BOT_TOKEN: "${BOT_TOKEN}"
+        ADMIN_ID: ${ADMIN_ID}
+        DATABASE_URL: "postgresql://app:${POSTGRES_PASSWORD}@postgres.pod:5432/app"
+        DATABASE_PATH: "/app/nodejs/data/bot.db"
+        DEFAULT_API_URL: "<% URL %>"
+        NODEJS_PLUGIN_PATHS: ${NODEJS_PLUGIN_PATHS}
+        CLOUDFLARE_TUNNEL: ${CLOUDFLARE_TUNNEL}
+        CLOUDFLARE_TOKEN: "${CLOUDFLARE_TOKEN}"
+        GITHUB_MIRROR: ${GITHUB_MIRROR}
+        NPM_REGISTRY: ${NPM_REGISTRY}
+    - name: postgres
+      image: mirror.gcr.io/library/postgres:16-alpine
+      servicePorts:
+        - 5432
+      vars:
+        POSTGRES_USER: "app"
+        POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+        POSTGRES_DB: "app"
+      volumes:
+        - name: s12ryt-tg-api-postgres-data
+          size: 10Gi
+          mountPath: /var/lib/postgresql/data

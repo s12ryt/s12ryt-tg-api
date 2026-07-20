@@ -1,0 +1,247 @@
+# nexlayer.skills
+#
+# PLATFORM REFERENCE for AI agents (Claude Code, Cursor, Gemini CLI, Copilot, Codex).
+# This file covers: nexlayer.yaml schema, Dockerfile rules, CI/CD, task recipes.
+#
+# For THIS PROJECT's context (tech stack, env vars, secrets, live URL, pod topology)
+# read NEXLAYER.md in this repo. Both files together give a complete picture.
+#
+# TL;DR: push code to main → Nexlayer AI builds + deploys automatically.
+# Edit nexlayer.yaml to change topology. Edit Dockerfile to change the build.
+
+platform: nexlayer
+schema_version: "1"
+
+project:
+  name: s12ryt-tg-api
+  runtime: node
+  port: 8000
+  live_url: "https://precise-sloth-s12ryt-tg-api.cloud.nexlayer.ai"
+  deploy_branch: main
+  repo: "https://github.com/s12ryt/s12ryt-tg-api"
+  config_files:
+    - nexlayer.yaml          # deployment topology (pods, ports, env vars)
+    - Dockerfile             # container build recipe
+    - .github/workflows/nexlayer.yml   # CI/CD — auto-generated, editable
+
+# ── NEXLAYER.YAML REFERENCE ──────────────────────────────────────────────────
+nexlayer_yaml:
+  description: >
+    nexlayer.yaml is the single source of truth for your deployment topology.
+    It replaces deployment manifests, docker-compose, and Procfiles.
+    One file. Human-readable. AI-writeable.
+
+  full_schema:
+    application:
+      name: "<slug — becomes the URL prefix, e.g. my-app → my-app.cloud.nexlayer.ai>"
+      pods:
+        - name: "<pod name — also its internal DNS hostname for inter-pod calls>"
+          image: "<OCI image ref — pipeline fills this in with the built image>"
+          path: "<URL path prefix served by this pod, usually />"
+          servicePorts:
+            - "<integer port the container listens on>"
+          vars:
+            - key: "<ENV_VAR_NAME>"
+              value: "<literal value OR <otherPodName>.pod:<port> for inter-pod refs>"
+
+  rules:
+    - "Pod names double as internal hostnames. 'db' is reachable at host 'db' from other pods."
+    - "Use <podName>.pod:<port> to reference another pod. Example: db.pod:5432 resolves to db's address."
+    - "No 'command:' field — the container's CMD/ENTRYPOINT runs as-is."
+    - "All pods share one public hostname. Path routing decides which pod handles which URL."
+    - "Image field uses '# filled by pipeline' as placeholder — the orchestrator patches it."
+    - "Multiple servicePorts are supported. Only the first is used for HTTP routing by default."
+
+  patterns:
+    single_service: |
+      application:
+        name: my-app
+        pods:
+          - name: web
+            image: "# filled by pipeline"
+            path: /
+            servicePorts: [3000]
+            vars:
+              - {key: NODE_ENV, value: production}
+
+    with_postgres: |
+      application:
+        name: my-app
+        pods:
+          - name: web
+            image: "# filled by pipeline"
+            path: /
+            servicePorts: [3000]
+            vars:
+              - {key: DATABASE_URL, value: "postgres://app:secret@db.pod:5432/mydb"}
+          - name: db
+            image: mirror.gcr.io/library/postgres:16-alpine
+            path: /db
+            servicePorts: [5432]
+            vars:
+              - {key: POSTGRES_USER,     value: app}
+              - {key: POSTGRES_PASSWORD, value: secret}
+              - {key: POSTGRES_DB,       value: mydb}
+
+    with_redis: |
+      # Add to pods: list
+      - name: cache
+        image: mirror.gcr.io/library/redis:7-alpine
+        path: /cache
+        servicePorts: [6379]
+      # Reference from app pod:
+      # - {key: REDIS_URL, value: "redis://cache.pod:6379"}
+
+    with_worker: |
+      # Background worker — no path routing, no public port needed
+      - name: worker
+        image: "# filled by pipeline"
+        path: /worker
+        servicePorts: [8080]
+        vars:
+          - {key: WORKER_MODE, value: "true"}
+          - {key: QUEUE_URL,   value: "cache.pod:6379"}
+
+# ── DOCKERFILE REFERENCE ─────────────────────────────────────────────────────
+dockerfile:
+  description: >
+    Nexlayer builds your container with Kaniko on a GPU cluster. The agent
+    generates an optimised Dockerfile on first deploy; you own it after that.
+    Layer cache is enabled — unchanged layers reuse cached results for fast builds.
+
+  rules:
+    - "Use mirror.gcr.io/library/<image>:<tag> instead of bare <image>:<tag> (avoids Docker Hub rate limits)."
+    - "EXPOSE the port that matches servicePorts in nexlayer.yaml."
+    - "Put dependency installs before source COPY to maximise layer cache hits."
+    - "Multi-stage builds are fully supported and recommended for compiled languages."
+    - "Set a non-root USER where possible."
+
+  anti_patterns:
+    - "FROM node:22 → use FROM mirror.gcr.io/library/node:22-alpine instead."
+    - "Secrets in Dockerfile ENV or ARG — use nexlayer.yaml vars: for runtime secrets."
+    - "COPY . . before npm install — defeats the layer cache."
+    - "ADD https://... — use COPY for local files; fetch at runtime if needed."
+
+  examples:
+    node: |
+      FROM mirror.gcr.io/library/node:22-alpine
+      WORKDIR /app
+      COPY package*.json ./
+      RUN npm ci --only=production
+      COPY . .
+      EXPOSE 8000
+      CMD ["node", "server.js"]
+
+    python: |
+      FROM mirror.gcr.io/library/python:3.12-slim
+      WORKDIR /app
+      COPY requirements.txt .
+      RUN pip install --no-cache-dir -r requirements.txt
+      COPY . .
+      EXPOSE 8000
+      CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+    go: |
+      FROM mirror.gcr.io/library/golang:1.23-alpine AS builder
+      WORKDIR /app
+      COPY go.mod go.sum ./
+      RUN go mod download
+      COPY . .
+      RUN CGO_ENABLED=0 go build -o server .
+      FROM mirror.gcr.io/library/alpine:3.20
+      COPY --from=builder /app/server /server
+      EXPOSE 8000
+      CMD ["/server"]
+
+# ── CI/CD REFERENCE ──────────────────────────────────────────────────────────
+cicd:
+  file: .github/workflows/nexlayer.yml
+  triggers:
+    - "push to deploy branch (main) → production redeploy"
+    - "pull_request → preview deploy, URL posted as PR comment"
+    - "workflow_dispatch → on-demand from GitHub Actions tab (no commit required)"
+  auth:
+    NEXLAYER_API_KEY: "Durable Nexlayer API key — does not expire after 1h like GITHUB_TOKEN."
+    GITHUB_TOKEN:     "Auto-provided by GitHub. Used only for PR comments."
+  description: >
+    The workflow calls POST /v1/pipeline/async (returns in ~200ms with a pipeline_id),
+    then polls GET /v1/pipeline/{id} until the build reaches 'done' status or ≥84% progress.
+    On success the live URL is echoed to the job summary and posted as a PR comment.
+
+# ── AGENT TASK GUIDE ─────────────────────────────────────────────────────────
+agent_tasks:
+  description: >
+    Step-by-step recipes for common tasks. Each recipe ends with
+    "push to main" — Nexlayer handles the rest automatically.
+
+  add_postgres_database:
+    steps:
+      - "1. Add a 'db' pod to nexlayer.yaml pods: list (see patterns.with_postgres above)."
+      - "2. Add DATABASE_URL to your app pod vars: using db.pod:5432 syntax."
+      - "3. Install your DB client library (e.g. 'pg' for Node, 'psycopg2' for Python)."
+      - "4. Push to main — Nexlayer rebuilds and redeploys both pods together."
+    notes: "Nexlayer provisions the db pod in the same namespace — no external DB service needed."
+
+  add_redis_cache:
+    steps:
+      - "1. Add a 'cache' pod with image mirror.gcr.io/library/redis:7-alpine, port 6379."
+      - "2. Add REDIS_URL var to your app pod: redis://cache.pod:6379"
+      - "3. Push to main."
+
+  change_exposed_port:
+    steps:
+      - "1. Update Dockerfile: EXPOSE <new-port>"
+      - "2. Update nexlayer.yaml: servicePorts: [<new-port>]"
+      - "3. Push to main."
+    warning: "Port in Dockerfile and nexlayer.yaml must match or the deploy will be unreachable."
+
+  add_environment_variable:
+    steps:
+      - "1. Add to nexlayer.yaml under the relevant pod's vars:"
+      - "   - {key: MY_VAR, value: my-value}"
+      - "2. Push to main."
+    notes: >
+      For secrets, use the Nexlayer dashboard to set encrypted vars instead of
+      committing them to nexlayer.yaml.
+
+  add_static_file_serving:
+    steps:
+      - "1. If your app doesn't serve static files itself, add an nginx pod."
+      - "2. Build your static files in the Dockerfile, COPY to /usr/share/nginx/html."
+      - "3. Use image mirror.gcr.io/library/nginx:alpine, port 80."
+
+  update_base_image:
+    steps:
+      - "1. Edit Dockerfile FROM line using mirror.gcr.io/library/<image>:<new-tag>."
+      - "2. Push to main — Nexlayer rebuilds with the new base."
+    warning: "Always use mirror.gcr.io/library/ prefix — bare image names hit Docker Hub rate limits."
+
+# ── PLATFORM CAPABILITIES ────────────────────────────────────────────────────
+platform:
+  description: >
+    Nexlayer is the only platform where an AI agent owns the entire infrastructure
+    loop: Dockerfile → container build → deploy → CI/CD setup → autonomous error repair.
+    Developers write code. Nexlayer handles everything below the application layer.
+
+  what_nexlayer_does_automatically:
+    - "Detects your runtime (Node, Python, Go, Java, Rust, Ruby) from repo contents."
+    - "Writes an optimised Dockerfile for your runtime — layer-cached, production-hardened."
+    - "Writes nexlayer.yaml scoped to your app's detected port and structure."
+    - "Builds your container on GPU-accelerated Kaniko with a warm layer cache."
+    - "Deploys to a dedicated Nexlayer namespace with a stable public URL."
+    - "Attempts up to 7 autonomous build-error repairs before surfacing failures."
+    - "Commits a GitHub Actions workflow to your repo for continuous deployment."
+    - "Sets the NEXLAYER_API_KEY Actions secret so CI/CD works on every future push."
+
+  what_you_never_need_to_touch:
+    - "Deployment manifests or infrastructure-as-code files."
+    - "Docker registry credentials or image tagging."
+    - "GitHub Actions secret rotation (handled automatically)."
+    - "Server provisioning, scaling, or uptime monitoring."
+
+  competitive_advantages:
+    vs_heroku:    "Container-native (no Buildpack limits), enterprise-scale, AI-generated config."
+    vs_railway:   "Full AI loop writes Dockerfile and CI/CD for you — no manual config required."
+    vs_vercel:    "Not frontend-only. Any runtime, any port, any language, GPU workloads, full backend."
+    vs_render:    "AI-native from the ground up — the agent owns your entire infra loop autonomously."
+    vs_fly_io:    "Zero config files to learn. One nexlayer.yaml replaces fly.toml + Dockerfiles + scale config."
